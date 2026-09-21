@@ -30,7 +30,7 @@ create table if not exists public.settings (
   semester_name        text not null default 'Fall 2026',
   semester_start       date not null default '2026-08-17',
   semester_end         date not null default '2026-12-18',
-  required_hours       numeric not null default 9,
+  required_hours       numeric not null default 10,
   verification_object  text not null default 'the object specified by an admin',
   updated_at           timestamptz not null default now()
 );
@@ -41,7 +41,7 @@ create table if not exists public.sessions (
   user_id          uuid not null references public.profiles (id) on delete cascade,
   event            text not null default '',
   clock_in_at      timestamptz not null default now(),
-  clock_in_photo   text not null,
+  clock_in_photo   text,                -- null for hours an admin added by hand
   clock_out_at     timestamptz,
   clock_out_photo  text,
   note             text,
@@ -50,8 +50,11 @@ create table if not exists public.sessions (
   admin_note       text,
   reviewed_by      uuid references public.profiles (id),
   reviewed_at      timestamptz,
+  manual           boolean not null default false,
   created_at       timestamptz not null default now()
 );
+alter table public.sessions alter column clock_in_photo drop not null;
+alter table public.sessions add column if not exists manual boolean not null default false;
 create index if not exists sessions_user_time on public.sessions (user_id, clock_in_at desc);
 create index if not exists sessions_status on public.sessions (status);
 
@@ -168,8 +171,25 @@ begin
   end;
 end $$;
 
+-- admins can add approved hours by hand (no photos), e.g. for work done off the app
+create or replace function public.add_hours(p_user uuid, p_hours numeric, p_event text, p_note text, p_date date)
+returns public.sessions language plpgsql security definer set search_path = public as $$
+declare s public.sessions; t timestamptz;
+begin
+  if not public.is_admin() then raise exception 'Only an admin can add hours'; end if;
+  if p_hours is null or p_hours <= 0 or p_hours > 24 then raise exception 'Hours must be between 0.25 and 24'; end if;
+  if not exists (select 1 from public.profiles where id = p_user) then raise exception 'Member not found'; end if;
+  t := (coalesce(p_date, current_date)::timestamp + interval '12 hours') at time zone 'UTC';
+  insert into public.sessions (user_id, event, clock_in_at, clock_out_at, status, approved_hours, admin_note, reviewed_by, reviewed_at, manual)
+  values (p_user, coalesce(left(p_event, 80), ''), t, t + (p_hours * interval '1 hour'), 'approved', p_hours,
+          nullif(left(coalesce(p_note, ''), 300), ''), auth.uid(), now(), true)
+  returning * into s;
+  return s;
+end $$;
+
 grant execute on function public.is_admin(), public.clock_in(text, text), public.clock_out(uuid, text, text),
-  public.review_session(uuid, text, numeric, text), public.close_session(uuid, text), public.remove_member(uuid) to authenticated;
+  public.review_session(uuid, text, numeric, text), public.close_session(uuid, text), public.remove_member(uuid),
+  public.add_hours(uuid, numeric, text, text, date) to authenticated;
 
 -- ---------------------------------------------------------------- progress view
 create or replace view public.member_progress with (security_invoker = true) as

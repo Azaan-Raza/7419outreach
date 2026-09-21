@@ -54,7 +54,7 @@ function renderLanding() {
     <div class="text-center"><img src="icons/logo.svg" width="48" height="48" alt="" style="border-radius:50%"></div>
     <h1>${signup ? "Create your account" : "Sign in to Outreach Tracker"}</h1>
     <p class="text-center color-fg-muted f5 mb-3">Team 7419</p>
-    <div class="flash f6 mb-3">${icon("info")} ${esc(st.semesterName || "This semester")} requirement: <b>${esc(fmtHours(st.requiredHours || 9))} hours</b> per member.</div>
+    <div class="flash f6 mb-3">${icon("info")} ${esc(st.semesterName || "This semester")} requirement: <b>${esc(fmtHours(st.requiredHours || 10))} hours</b> per member.</div>
     <div class="auth-form">
       <form id="auth-form" novalidate>
         ${signup ? `
@@ -109,7 +109,7 @@ async function onAuthSubmit(e) {
 /* ---------------- home ---------------- */
 function renderHome() {
   const { user, settings: st, progress: pr, sessions, open } = state;
-  const req = Number(st.requiredHours) || 9;
+  const req = Number(st.requiredHours) || 10;
   const approved = pr.approvedHours, pending = pr.pendingHours;
   const done = approved >= req;
 
@@ -191,6 +191,17 @@ function renderHome() {
 }
 
 function sessionRow(s) {
+  if (s.manual) {
+    return `
+  <div class="Box-row session-row" data-id="${esc(s.id)}">
+    <div class="main">
+      <div class="d-flex flex-items-center flex-wrap" style="gap:4px 8px"><span class="text-semibold">${esc(s.event || "Hours added by an admin")}</span>${statusTag("approved")}</div>
+      <div class="f6 color-fg-muted mt-1">${esc(fmtDay(s.clockInAt))}, added by an admin</div>
+      ${s.adminNote ? `<div class="flash f6 mt-2 py-2">${icon("info")} ${esc(s.adminNote)}</div>` : ""}
+    </div>
+    <div class="hours"><b>${esc(fmtHours(s.approvedHours))}</b><small>hrs</small></div>
+  </div>`;
+  }
   let hours, hint = "hrs";
   if (s.status === "approved") hours = fmtHours(s.approvedHours);
   else if (s.status === "pending") { hours = fmtHours(suggestHours(s)); hint = "hrs on the clock"; }

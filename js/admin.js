@@ -1,7 +1,7 @@
 // Lead (admin) app: separate sign-in, review queue with both photos, live clock-ins, roster with progress, settings.
 
 import { db, ready, suggestHours } from "./db.js";
-import { $, $$, esc, fmtDay, fmtDate, fmtTime, fmtHours, fmtDuration, hoursBetween, roundQuarter, progressBar, statusTag, toast, liveTimer, setBusy, csvDownload, initials } from "./ui.js";
+import { $, $$, esc, fmtDay, fmtDate, fmtTime, fmtHours, fmtDuration, hoursBetween, roundQuarter, progressBar, statusTag, toast, sheet, liveTimer, setBusy, csvDownload, initials } from "./ui.js";
 import { photoCell, hydratePhotos } from "./photos-ui.js";
 import { icon } from "./icons.js";
 
@@ -71,7 +71,7 @@ function renderSignIn() {
 function renderDash() {
   stopTimers();
   const { settings: st, sessions, members, admin } = state;
-  const req = Number(st.requiredHours) || 9;
+  const req = Number(st.requiredHours) || 10;
   const pending = sessions.filter((s) => s.status === "pending");
   const open = sessions.filter((s) => s.status === "open");
   const active = members.filter((m) => !m.excused);
@@ -139,14 +139,14 @@ function reviewCard(s) {
       ${statusTag(s.status)}
     </div>
     <div class="Box-body">
-      <div><b>${esc(s.event || "Outreach")}</b> <span class="color-fg-muted">· ${esc(fmtDate(s.clockInAt))}</span></div>
-      <div class="photos">
+      <div><b>${esc(s.event || (s.manual ? "Hours added by an admin" : "Outreach"))}</b> <span class="color-fg-muted">· ${esc(fmtDate(s.clockInAt))}</span></div>
+      ${s.manual ? `<div class="f6 color-fg-muted mt-1">Added by an admin, no photos</div>` : `<div class="photos">
         ${photoCell(s.clockInPhoto, "Clock in", s.clockInAt, s)}
         ${photoCell(s.clockOutPhoto, "Clock out", s.clockOutAt, s)}
-      </div>
+      </div>`}
     </div>
     <div class="Box-row decision color-bg-subtle">
-      <div><div class="f6 color-fg-muted">Time on the clock</div><div class="text-semibold f4">${esc(fmtDuration(dur * 36e5))} <span class="color-fg-muted f6 text-normal">${esc(fmtHours(dur))} h</span></div></div>
+      ${s.manual ? `<div><div class="f6 color-fg-muted">Added manually</div><div class="text-semibold f4">${esc(fmtHours(s.approvedHours || 0))} h</div></div>` : `<div><div class="f6 color-fg-muted">Time on the clock</div><div class="text-semibold f4">${esc(fmtDuration(dur * 36e5))} <span class="color-fg-muted f6 text-normal">${esc(fmtHours(dur))} h</span></div></div>`}
       ${deciding ? `
         <div class="form-group"><label>Hours to approve</label><input class="form-control width-full hours" type="number" inputmode="decimal" step="0.25" min="0" max="24" value="${esc(s.approvedHours ?? suggestHours(s))}"></div>
         <div class="form-group span"><label>Note to ${esc(first)} <span class="text-normal color-fg-muted">(optional; required to send back)</span></label><input class="form-control width-full note" type="text" maxlength="300" value="${esc(s.adminNote)}"></div>
@@ -223,7 +223,7 @@ function renderLive(panel) {
 
 /* ---------------- members ---------------- */
 function renderMembers(panel) {
-  const req = Number(state.settings.requiredHours) || 9;
+  const req = Number(state.settings.requiredHours) || 10;
   const q = state.search.trim().toLowerCase();
   let list = state.members.filter((m) => !q || `${m.name} ${m.email} ${m.grade}`.toLowerCase().includes(q));
   if (state.sort === "progress") list = [...list].sort((a, b) => b.approvedHours - a.approvedHours || a.name.localeCompare(b.name));
@@ -249,10 +249,11 @@ function renderMembers(panel) {
           <span>${roundQuarter(m.pendingHours) ? `${esc(fmtHours(roundQuarter(m.pendingHours)))} h waiting for review` : ""}${m.openSessions ? `${roundQuarter(m.pendingHours) ? " · " : ""}clocked in` : ""}${m.excused && m.excusedNote ? `${roundQuarter(m.pendingHours) || m.openSessions ? " · " : ""}${esc(m.excusedNote)}` : ""}</span>
           <span>${m.excused ? "Excused" : m.approvedHours >= req ? `<span class="Label Label--approved">${icon("check", 12)} Requirement met</span>` : `${esc(fmtHours(req - m.approvedHours))} h to go`}</span>
         </div>
-        ${m.id !== state.admin.id ? `<div class="member-actions">
-          <button type="button" class="btn btn-sm excuse" data-id="${esc(m.id)}" data-excused="${m.excused ? "1" : ""}">${m.excused ? "Remove excuse" : "Excuse from hours"}</button>
-          <button type="button" class="btn btn-sm btn-danger remove" data-id="${esc(m.id)}" data-name="${esc(m.name || m.email)}">Remove from roster</button>
-        </div>` : ""}
+        <div class="member-actions">
+          <button type="button" class="btn btn-sm add-hours" data-id="${esc(m.id)}">${icon("clock")}Add hours</button>
+          ${m.id !== state.admin.id ? `<button type="button" class="btn btn-sm excuse" data-id="${esc(m.id)}" data-excused="${m.excused ? "1" : ""}">${m.excused ? "Remove excuse" : "Excuse from hours"}</button>
+          <button type="button" class="btn btn-sm btn-danger remove" data-id="${esc(m.id)}" data-name="${esc(m.name || m.email)}">Remove from roster</button>` : ""}
+        </div>
       </div>`).join("") : `<div class="blankslate">${icon("people", 24)}<h3 class="blankslate-heading">No matching members</h3></div>`}
       <div class="Box-footer d-flex flex-wrap flex-items-center" style="gap:8px">
         <button type="button" class="btn btn-sm" id="export-members">${icon("download")}Download roster (CSV)</button>
@@ -260,6 +261,7 @@ function renderMembers(panel) {
       </div>
     </div>`;
   $$(".BtnGroup-item", panel).forEach((b) => b.addEventListener("click", () => { state.sort = b.dataset.s; renderPanel(); }));
+  $$(".add-hours", panel).forEach((b) => b.addEventListener("click", () => openAddHours(state.members.find((m) => m.id === b.dataset.id))));
   $$(".excuse", panel).forEach((b) => b.addEventListener("click", async () => {
     const excusing = !b.dataset.excused;
     let note = "";
@@ -283,9 +285,52 @@ function renderMembers(panel) {
   });
   $("#export-sessions", panel).addEventListener("click", () => {
     const iso = (v) => { if (!v) return ""; const d = new Date(v); const p = (n) => String(n).padStart(2, "0"); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`; };
-    const rows = [["Date", "Member email", "Event", "Clock in", "Clock out", "Hours on clock", "Status", "Approved hours", "Admin note", "Member name"]];
-    state.sessions.forEach((s) => rows.push([iso(s.clockInAt).slice(0, 10), s.userEmail, s.event, iso(s.clockInAt).slice(11), iso(s.clockOutAt).slice(11), s.clockOutAt ? fmtHours(hoursBetween(s.clockInAt, s.clockOutAt)) : "", ({ pending: "Waiting", approved: "Approved", rejected: "Sent back", open: "Open" })[s.status], s.approvedHours ?? "", s.adminNote, s.userName]));
+    const rows = [["Date", "Member email", "Event", "Clock in", "Clock out", "Hours on clock", "Status", "Approved hours", "Admin note", "Member name", "Type"]];
+    state.sessions.forEach((s) => rows.push([iso(s.clockInAt).slice(0, 10), s.userEmail, s.event, s.manual ? "" : iso(s.clockInAt).slice(11), s.manual ? "" : iso(s.clockOutAt).slice(11), s.manual ? "" : s.clockOutAt ? fmtHours(hoursBetween(s.clockInAt, s.clockOutAt)) : "", ({ pending: "Waiting", approved: "Approved", rejected: "Sent back", open: "Open" })[s.status], s.approvedHours ?? "", s.adminNote, s.userName, s.manual ? "Added by admin" : "Clock in/out"]));
     csvDownload(`outreach-sessions-${state.settings.semesterName.replace(/\s+/g, "-").toLowerCase()}.csv`, rows);
+  });
+}
+
+/* ---------------- add hours by hand ---------------- */
+function openAddHours(m) {
+  if (!m) return;
+  const first = (m.name || "them").split(" ")[0];
+  const d = new Date(), p = (n) => String(n).padStart(2, "0");
+  const today = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+  const el = sheet.open(`
+    <div class="Overlay-header Overlay-header--divided">
+      <div class="Overlay-headerContentWrap">
+        <div class="Overlay-titleWrap"><h1 class="Overlay-title">Add hours</h1><p class="Overlay-description">${esc(m.name || m.email)}</p></div>
+        <div class="Overlay-actionWrap"><button type="button" class="close-button Overlay-closeButton" aria-label="Close">${icon("x")}</button></div>
+      </div>
+    </div>
+    <div class="Overlay-body">
+      <div class="field-row">
+        <div class="form-group"><label for="ah-hours">Hours</label><input class="form-control width-full" id="ah-hours" type="number" inputmode="decimal" step="0.25" min="0.25" max="24" value="1"></div>
+        <div class="form-group"><label for="ah-date">Date</label><input class="form-control width-full" id="ah-date" type="date" value="${today}"></div>
+      </div>
+      <div class="form-group"><label for="ah-event">Event</label><input class="form-control width-full" id="ah-event" type="text" maxlength="80" placeholder="example: FTC Meet 9/20"></div>
+      <div class="form-group"><label for="ah-note">Note to ${esc(first)} <span class="text-normal color-fg-muted">(optional)</span></label><input class="form-control width-full" id="ah-note" type="text" maxlength="300"></div>
+      <div class="form-error" id="ah-error"></div>
+    </div>
+    <div class="Overlay-footer Overlay-footer--alignEnd">
+      <button class="btn" id="ah-cancel" type="button">Cancel</button>
+      <button class="btn btn-primary" id="ah-save" type="button">Add 1 hour</button>
+    </div>`);
+  const hours = $("#ah-hours", el), save = $("#ah-save", el), err = $("#ah-error", el);
+  const label = () => { const h = Number(hours.value) || 0; save.textContent = `Add ${fmtHours(h)} hour${h === 1 ? "" : "s"}`; };
+  hours.addEventListener("input", label);
+  $("#ah-cancel", el).addEventListener("click", () => sheet.close());
+  save.addEventListener("click", async () => {
+    const h = Number(hours.value);
+    if (!(h > 0) || h > 24) { err.textContent = "Hours must be between 0.25 and 24."; return; }
+    setBusy(save, true, "Adding");
+    try {
+      await db.addHours({ userId: m.id, hours: h, event: $("#ah-event", el).value, note: $("#ah-note", el).value, date: $("#ah-date", el).value });
+      sheet.close();
+      toast(`Added ${fmtHours(h)} hours for ${m.name || m.email}.`, "gold");
+      await loadData(); renderDash();
+    } catch (e) { err.textContent = e.message; setBusy(save, false); }
   });
 }
 

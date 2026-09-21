@@ -85,7 +85,7 @@ ws.column_dimensions["A"].width = 120
 st = wb.create_sheet("Settings")
 st.sheet_properties.tabColor = GOLD
 title(st, "Settings", "Only sessions between these dates count.")
-rows = [("Semester", "Fall 2026"), ("Starts", date(2026, 8, 17)), ("Ends", date(2026, 12, 18)), ("Hours each member needs", 9), ("What has to be in every photo", "the object specified by a lead")]
+rows = [("Semester", "Fall 2026"), ("Starts", date(2026, 8, 17)), ("Ends", date(2026, 12, 18)), ("Hours each member needs", 10), ("What has to be in every photo", "the object specified by a lead")]
 for i, (k, v) in enumerate(rows, 4):
     st.cell(row=i, column=1, value=k).font = label_font
     c = st.cell(row=i, column=2, value=v)
