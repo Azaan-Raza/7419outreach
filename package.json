@@ -1,0 +1,13 @@
+{
+  "name": "outreach-hours",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Team 7419 Outreach Tracker",
+  "type": "module",
+  "scripts": {
+    "dev": "node serve.mjs",
+    "start": "node serve.mjs",
+    "db:setup": "node supabase/setup.mjs",
+    "db:sql": "node supabase/sql.mjs"
+  }
+}
