@@ -26,9 +26,13 @@ npm run dev
 
 Then open http://localhost:4419 (admin page at /admin.html). There's no build step and no dependencies to install; `npm run dev` starts a small static server from `serve.mjs`. No Node? `python3 serve.py` does the same thing (that's what the `outreach-hours` entry in `.claude/launch.json` uses). Add `?demo` to the URL to play with sample data in this browser only; `?live` switches back to the real database.
 
+## Live site
+
+https://azaan-raza.github.io/7419outreach/ (GitHub Pages from the `main` branch of Azaan-Raza/7419outreach; the admin page is at /admin.html). Push to `main` and Pages redeploys in about a minute. A mirror of the code lives at frc-7419/7419OutreachTracker.
+
 ## Go live
 
-The camera and home-screen install both need HTTPS, so put the folder on any static host (Vercel, Netlify, GitHub Pages). There's no build step.
+The camera and home-screen install both need HTTPS, so the site is served from GitHub Pages. Any static host works (Vercel, Netlify); there's no build step.
 
 The project is `nhcxgakyygneuahbhcvv` at supabase.com. Two ways to wire it up:
 
