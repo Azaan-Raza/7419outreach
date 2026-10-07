@@ -74,6 +74,7 @@ class DemoDb {
     this.key = "outreach-hours-demo-v1";
     this.listeners = [];
     this.urlCache = new Map();
+    this.recoveryPending = /type=recovery/.test(location.hash); // mirrors the Supabase reset link so the screen can be previewed in demo mode
     try { this.state = JSON.parse(localStorage.getItem(this.key)) || null; } catch (_) { this.state = null; }
     if (!this.state) { this.state = seedState(); this.save(); }
     // older demo data named a specific object; the wording is now "specified by a lead"
@@ -110,6 +111,15 @@ class DemoDb {
   }
   async signOut() { this.state.auth = null; this.state.adminAuth = false; this.save(); this.emit(); }
   async getUser() { return this.pub(this.me()); }
+  async sendPasswordReset(email) {
+    const u = this.state.users.find((x) => x.email === String(email || "").trim().toLowerCase());
+    return { demo: true, exists: !!u };
+  }
+  async updatePassword(password) {
+    const u = this.requireUser();
+    if (!password || password.length < 6) throw new Error("Password must be at least 6 characters.");
+    u.password = password; this.recoveryPending = false; this.save();
+  }
 
   /* settings */
   async getSettings() { return { ...this.state.settings }; }
@@ -199,6 +209,20 @@ class DemoDb {
     return this.state.users.map((u) => ({ ...this.pub(u), ...this.totalsFor(u.id) })).sort((a, b) => a.name.localeCompare(b.name));
   }
   async setRole() { throw new Error("Admin roles need Supabase. Not available in demo mode."); }
+  async adminSetPassword(userId, password) {
+    this.requireAdmin();
+    const u = this.state.users.find((x) => x.id === userId);
+    if (!u) throw new Error("Member not found.");
+    if (!password || password.length < 6) throw new Error("Password must be at least 6 characters.");
+    u.password = password; this.recoveryPending = false; this.save();
+  }
+  async adminUpdateProfile(userId, { name, grade }) {
+    this.requireAdmin();
+    const u = this.state.users.find((x) => x.id === userId);
+    if (!u) throw new Error("Member not found.");
+    if (!String(name || "").trim()) throw new Error("Name is required.");
+    u.name = String(name).trim(); u.grade = grade || ""; this.save();
+  }
   async addHours({ userId, hours, event, note, date }) {
     this.requireAdmin();
     const u = this.state.users.find((x) => x.id === userId);
@@ -250,7 +274,12 @@ class SupaDb {
   async init() {
     const { createClient } = await import("https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm");
     this.sb = createClient(CFG.supabaseUrl, CFG.supabaseAnonKey, { auth: { persistSession: true, autoRefreshToken: true } });
-    this.sb.auth.onAuthStateChange(() => { this.profileCache = null; setTimeout(() => this.listeners.forEach((cb) => cb()), 0); });
+    this.recoveryPending = /type=recovery/.test(location.hash);
+    this.sb.auth.onAuthStateChange((event) => {
+      if (event === "PASSWORD_RECOVERY") this.recoveryPending = true;
+      this.profileCache = null;
+      setTimeout(() => this.listeners.forEach((cb) => cb()), 0);
+    });
     return this;
   }
   onAuthChange(cb) { this.listeners.push(cb); }
@@ -276,7 +305,18 @@ class SupaDb {
     if (error) this.fail(error, "Wrong email or password.");
     return this.getUser();
   }
-  async signOut() { this.profileCache = null; await this.sb.auth.signOut(); }
+  async signOut() { this.profileCache = null; this.recoveryPending = false; await this.sb.auth.signOut(); }
+  async sendPasswordReset(email) {
+    const redirectTo = new URL("index.html", location.href).href;
+    const { error } = await this.sb.auth.resetPasswordForEmail(String(email || "").trim().toLowerCase(), { redirectTo });
+    if (error) this.fail(error);
+    return { demo: false };
+  }
+  async updatePassword(password) {
+    const { error } = await this.sb.auth.updateUser({ password });
+    if (error) this.fail(error);
+    this.recoveryPending = false;
+  }
   async getUser() {
     const { data: { session } } = await this.sb.auth.getSession();
     if (!session) return null;
@@ -391,6 +431,14 @@ class SupaDb {
   }
   async setRole(userId, role) {
     const { error } = await this.sb.from("profiles").update({ role }).eq("id", userId);
+    if (error) this.fail(error);
+  }
+  async adminSetPassword(userId, password) {
+    const { error } = await this.sb.rpc("admin_set_password", { p_user: userId, p_password: password });
+    if (error) this.fail(error);
+  }
+  async adminUpdateProfile(userId, { name, grade }) {
+    const { error } = await this.sb.from("profiles").update({ name: String(name || "").trim(), grade: grade || null }).eq("id", userId);
     if (error) this.fail(error);
   }
   async addHours({ userId, hours, event, note, date }) {

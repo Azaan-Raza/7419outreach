@@ -187,9 +187,25 @@ begin
   return s;
 end $$;
 
+-- admins can set a member's password directly (for members who can't get the reset email).
+-- Writes a bcrypt hash the same way Supabase Auth does, and signs the member out of other devices.
+create or replace function public.admin_set_password(p_user uuid, p_password text)
+returns void language plpgsql security definer set search_path = public, extensions as $$
+begin
+  if not public.is_admin() then raise exception 'Only an admin can set passwords'; end if;
+  if p_password is null or length(p_password) < 6 then raise exception 'Password must be at least 6 characters'; end if;
+  if not exists (select 1 from public.profiles where id = p_user) then raise exception 'Member not found'; end if;
+  update auth.users set encrypted_password = extensions.crypt(p_password, extensions.gen_salt('bf', 10)), updated_at = now() where id = p_user;
+  begin
+    delete from auth.sessions where user_id = p_user;
+  exception when others then
+    null;
+  end;
+end $$;
+
 grant execute on function public.is_admin(), public.clock_in(text, text), public.clock_out(uuid, text, text),
   public.review_session(uuid, text, numeric, text), public.close_session(uuid, text), public.remove_member(uuid),
-  public.add_hours(uuid, numeric, text, text, date) to authenticated;
+  public.add_hours(uuid, numeric, text, text, date), public.admin_set_password(uuid, text) to authenticated;
 
 -- ---------------------------------------------------------------- progress view
 create or replace view public.member_progress with (security_invoker = true) as

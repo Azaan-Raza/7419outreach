@@ -28,6 +28,7 @@ async function refresh() {
   try {
     state.user = await db.getUser();
     state.settings = await db.getSettings();
+    if (state.user && db.recoveryPending) { renderSetPassword(); return; }
     if (state.user) {
       [state.sessions, state.progress] = await Promise.all([db.listMySessions(), db.myProgress()]);
       state.open = state.sessions.find((s) => s.status === "open") || null;
@@ -49,6 +50,7 @@ function renderLanding() {
   top.innerHTML = "";
   const st = state.settings || {};
   const signup = state.authTab === "signup";
+  if (state.authTab === "forgot") { renderForgot(); return; }
   app.innerHTML = `
   <div class="auth-page">
     <div class="text-center"><img src="icons/logo.svg" width="48" height="48" alt="" style="border-radius:50%"></div>
@@ -67,7 +69,7 @@ function renderLanding() {
         <div class="form-group"><label for="password">Password</label><input class="form-control" id="password" name="password" type="password" autocomplete="new-password" minlength="6" required><span class="note">At least 6 characters.</span></div>
         ` : `
         <div class="form-group"><label for="email">Email</label><input class="form-control" id="email" name="email" type="email" autocomplete="email" inputmode="email" required></div>
-        <div class="form-group"><label for="password">Password</label><input class="form-control" id="password" name="password" type="password" autocomplete="current-password" required></div>
+        <div class="form-group"><div class="d-flex flex-justify-between flex-items-baseline"><label for="password">Password</label><a href="#" class="f6" data-tab="forgot">Forgot password?</a></div><input class="form-control" id="password" name="password" type="password" autocomplete="current-password" required></div>
         `}
         <div class="form-error" id="auth-error"></div>
         <button class="btn btn-primary btn-block" type="submit">${signup ? "Create account" : "Sign in"}</button>
@@ -79,6 +81,65 @@ function renderLanding() {
 
   $$("[data-tab]", app).forEach((a) => a.addEventListener("click", (e) => { e.preventDefault(); state.authTab = a.dataset.tab; renderLanding(); }));
   $("#auth-form").addEventListener("submit", onAuthSubmit);
+}
+
+function renderForgot() {
+  app.innerHTML = `
+  <div class="auth-page">
+    <div class="text-center"><img src="icons/logo.svg" width="48" height="48" alt="" style="border-radius:50%"></div>
+    <h1>Reset your password</h1>
+    <div class="auth-form">
+      <form id="forgot-form" novalidate>
+        <div class="form-group"><label for="email">Email</label><input class="form-control" id="email" name="email" type="email" autocomplete="email" inputmode="email" required></div>
+        <div class="form-error" id="auth-error"></div>
+        <button class="btn btn-primary btn-block" type="submit">Send password reset email</button>
+      </form>
+    </div>
+    <div class="callout"><a href="#" data-tab="signin">Back to sign in</a></div>
+  </div>`;
+  $$("[data-tab]", app).forEach((a) => a.addEventListener("click", (e) => { e.preventDefault(); state.authTab = a.dataset.tab; renderLanding(); }));
+  $("#forgot-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const form = e.currentTarget, btn = form.querySelector("button"), err = $("#auth-error"), email = $("#email").value.trim();
+    err.textContent = "";
+    if (!email) { err.textContent = "Email is required."; return; }
+    setBusy(btn, true, "Sending");
+    try {
+      const r = await db.sendPasswordReset(email);
+      form.innerHTML = r.demo
+        ? `<div class="flash f6 mb-0">${icon("info")} Demo mode: every demo account uses the password <b>demo</b>.</div>`
+        : `<div class="flash flash-success f6 mb-0">${icon("mail")} Check your email for a link to reset your password. If it doesn't appear within a few minutes, check your spam folder.</div>`;
+    } catch (ex) { err.textContent = ex.message; setBusy(btn, false); }
+  });
+}
+
+function renderSetPassword() {
+  if (stopTimer) { stopTimer(); stopTimer = null; }
+  top.innerHTML = "";
+  app.innerHTML = `
+  <div class="auth-page">
+    <div class="text-center"><img src="icons/logo.svg" width="48" height="48" alt="" style="border-radius:50%"></div>
+    <h1>Set a new password</h1>
+    <p class="text-center color-fg-muted f5 mb-3">${esc(state.user?.email || "")}</p>
+    <div class="auth-form">
+      <form id="setpw-form" novalidate>
+        <div class="form-group"><label for="pw1">New password</label><input class="form-control" id="pw1" type="password" autocomplete="new-password" minlength="6" required><span class="note">At least 6 characters.</span></div>
+        <div class="form-group"><label for="pw2">Confirm new password</label><input class="form-control" id="pw2" type="password" autocomplete="new-password" minlength="6" required></div>
+        <div class="form-error" id="auth-error"></div>
+        <button class="btn btn-primary btn-block" type="submit">Set password</button>
+      </form>
+    </div>
+  </div>`;
+  $("#setpw-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const btn = e.currentTarget.querySelector("button"), err = $("#auth-error"), p1 = $("#pw1").value, p2 = $("#pw2").value;
+    err.textContent = "";
+    if (p1.length < 6) { err.textContent = "Password must be at least 6 characters."; return; }
+    if (p1 !== p2) { err.textContent = "Passwords don't match."; return; }
+    setBusy(btn, true, "Saving");
+    try { await db.updatePassword(p1); db.recoveryPending = false; history.replaceState(null, "", location.pathname + location.search); toast("Password updated.", "gold"); await refresh(); }
+    catch (ex) { err.textContent = ex.message; setBusy(btn, false); }
+  });
 }
 
 async function onAuthSubmit(e) {

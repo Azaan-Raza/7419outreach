@@ -251,6 +251,7 @@ function renderMembers(panel) {
         </div>
         <div class="member-actions">
           <button type="button" class="btn btn-sm add-hours" data-id="${esc(m.id)}">${icon("clock")}Add hours</button>
+          <button type="button" class="btn btn-sm account" data-id="${esc(m.id)}">${icon("person")}Account</button>
           ${m.id !== state.admin.id ? `<button type="button" class="btn btn-sm excuse" data-id="${esc(m.id)}" data-excused="${m.excused ? "1" : ""}">${m.excused ? "Remove excuse" : "Excuse from hours"}</button>
           <button type="button" class="btn btn-sm btn-danger remove" data-id="${esc(m.id)}" data-name="${esc(m.name || m.email)}">Remove from roster</button>` : ""}
         </div>
@@ -262,6 +263,7 @@ function renderMembers(panel) {
     </div>`;
   $$(".BtnGroup-item", panel).forEach((b) => b.addEventListener("click", () => { state.sort = b.dataset.s; renderPanel(); }));
   $$(".add-hours", panel).forEach((b) => b.addEventListener("click", () => openAddHours(state.members.find((m) => m.id === b.dataset.id))));
+  $$(".account", panel).forEach((b) => b.addEventListener("click", () => openAccount(state.members.find((m) => m.id === b.dataset.id))));
   $$(".excuse", panel).forEach((b) => b.addEventListener("click", async () => {
     const excusing = !b.dataset.excused;
     let note = "";
@@ -331,6 +333,63 @@ function openAddHours(m) {
       toast(`Added ${fmtHours(h)} hours for ${m.name || m.email}.`, "gold");
       await loadData(); renderDash();
     } catch (e) { err.textContent = e.message; setBusy(save, false); }
+  });
+}
+
+/* ---------------- account (name, grade, password) ---------------- */
+function openAccount(m) {
+  if (!m) return;
+  const grades = ["", "9", "10", "11", "12"];
+  const el = sheet.open(`
+    <div class="Overlay-header Overlay-header--divided">
+      <div class="Overlay-headerContentWrap">
+        <div class="Overlay-titleWrap"><h1 class="Overlay-title">Account</h1><p class="Overlay-description">${esc(m.email)}</p></div>
+        <div class="Overlay-actionWrap"><button type="button" class="close-button Overlay-closeButton" aria-label="Close">${icon("x")}</button></div>
+      </div>
+    </div>
+    <div class="Overlay-body">
+      <form id="acct-form" novalidate>
+        <div class="field-row">
+          <div class="form-group"><label for="acct-name">Name</label><input class="form-control width-full" id="acct-name" type="text" value="${esc(m.name)}" maxlength="80" required></div>
+          <div class="form-group"><label for="acct-grade">Grade</label><select class="form-select width-full" id="acct-grade">${grades.map((g) => `<option value="${g}" ${String(m.grade || "") === g ? "selected" : ""}>${g || "Not set"}</option>`).join("")}</select></div>
+        </div>
+        <div class="form-error" id="acct-error"></div>
+        <button class="btn" type="submit" id="acct-save">Save</button>
+      </form>
+      <div class="border-top mt-3 pt-3">
+        <div class="form-group"><label for="acct-pw">New password</label>
+          <div class="d-flex" style="gap:8px"><input class="form-control width-full" id="acct-pw" type="text" minlength="6" maxlength="72" autocomplete="off" placeholder="At least 6 characters"><button type="button" class="btn" id="acct-setpw">Set password</button></div>
+        </div>
+        <div class="form-error" id="acct-pw-error"></div>
+        ${db.mode === "supabase" ? `<button type="button" class="btn btn-sm" id="acct-reset">${icon("mail")}Send password reset email</button>` : ""}
+      </div>
+    </div>
+    <div class="Overlay-footer Overlay-footer--alignEnd"><button class="btn" type="button" id="acct-close">Close</button></div>`);
+  $("#acct-close", el).addEventListener("click", () => sheet.close());
+  $("#acct-form", el).addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const btn = $("#acct-save", el), err = $("#acct-error", el);
+    err.textContent = "";
+    setBusy(btn, true, "Saving");
+    try { await db.adminUpdateProfile(m.id, { name: $("#acct-name", el).value, grade: $("#acct-grade", el).value }); toast("Saved.", "gold"); await loadData(); setBusy(btn, false); renderDash(); }
+    catch (ex) { err.textContent = ex.message; setBusy(btn, false); }
+  });
+  $("#acct-setpw", el).addEventListener("click", async () => {
+    const btn = $("#acct-setpw", el), err = $("#acct-pw-error", el), pw = $("#acct-pw", el).value;
+    err.textContent = "";
+    if (pw.length < 6) { err.textContent = "Password must be at least 6 characters."; return; }
+    setBusy(btn, true, "Saving");
+    try { await db.adminSetPassword(m.id, pw); toast(`Password set for ${m.name || m.email}.`, "gold"); $("#acct-pw", el).value = ""; }
+    catch (ex) { err.textContent = ex.message; }
+    setBusy(btn, false);
+  });
+  $("#acct-reset", el)?.addEventListener("click", async () => {
+    const btn = $("#acct-reset", el), err = $("#acct-pw-error", el);
+    err.textContent = "";
+    setBusy(btn, true, "Sending");
+    try { await db.sendPasswordReset(m.email); toast(`Reset email sent to ${m.email}.`, "gold"); }
+    catch (ex) { err.textContent = ex.message; }
+    setBusy(btn, false);
   });
 }
 
