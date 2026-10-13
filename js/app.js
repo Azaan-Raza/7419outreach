@@ -1,7 +1,7 @@
 // Member app: sign in, progress toward the semester requirement, clock in / clock out with a photo, history.
 
 import { db, ready, suggestHours } from "./db.js";
-import { $, $$, esc, fmtDay, fmtTime, fmtHours, fmtDuration, progressBar, statusTag, toast, sheet, isIOS, isStandalone, liveTimer, setBusy } from "./ui.js";
+import { $, $$, esc, fmtDay, fmtTime, fmtHours, fmtDuration, roundQuarter, progressBar, statusTag, categoryTag, toast, sheet, isIOS, isStandalone, liveTimer, setBusy } from "./ui.js";
 import { pickPhoto, preparePhoto } from "./photo.js";
 import { photoCell, hydratePhotos } from "./photos-ui.js";
 import { icon } from "./icons.js";
@@ -173,6 +173,7 @@ function renderHome() {
   const req = Number(st.requiredHours) || 10;
   const approved = pr.approvedHours, pending = pr.pendingHours;
   const done = approved >= req;
+  const shop = pr.shopHours || 0, shopPending = pr.shopPendingHours || 0, reqShop = Number(st.requiredShopHours) || 0;
 
   top.innerHTML = `<span class="f6 hide-sm-inline mr-3" style="color:var(--header-fgColor-default)">${esc(user.name || user.email)}</span><button class="btn btn-sm btn-header" id="signout">${icon("sign-out")}Sign out</button>`;
   $("#signout").addEventListener("click", async () => { await db.signOut(); state.authTab = "signin"; await refresh(); });
@@ -186,11 +187,19 @@ function renderHome() {
   </div>
 
   <div class="Box">
-    <div class="Box-header d-flex"><h2 class="Box-title flex-auto">Progress</h2></div>
+    <div class="Box-header d-flex"><h2 class="Box-title flex-auto">Outreach</h2></div>
     <div class="Box-body">
       <div class="big-number">${esc(fmtHours(approved))}<small>/ ${esc(fmtHours(req))} hours approved</small></div>
       <div class="mt-2">${progressBar({ approved, pending, required: req, excused: user.excused })}</div>
       ${user.excused && user.excusedNote ? `<p class="f6 color-fg-muted mt-2 mb-0">${esc(user.excusedNote)}</p>` : ""}
+    </div>
+  </div>
+
+  <div class="Box">
+    <div class="Box-header d-flex"><h2 class="Box-title flex-auto">Shop</h2></div>
+    <div class="Box-body">
+      <div class="big-number">${esc(fmtHours(shop))}<small>${reqShop > 0 ? `/ ${esc(fmtHours(reqShop))} hours` : "hours this semester"}</small></div>
+      ${reqShop > 0 ? `<div class="mt-2">${progressBar({ approved: shop, pending: shopPending, required: reqShop, excused: user.excused })}</div>` : roundQuarter(shopPending) ? `<div class="f6 color-fg-muted mt-1">${esc(fmtHours(roundQuarter(shopPending)))} h waiting for review</div>` : ""}
     </div>
   </div>
 
@@ -200,7 +209,7 @@ function renderHome() {
       ${open ? `
         <div class="d-flex flex-items-center flex-wrap" style="gap:12px 16px">
           <div class="flex-auto">
-            <span class="State State--open"><span class="dot"></span>Clocked in</span>
+            <span class="State State--open"><span class="dot"></span>Clocked in</span> ${categoryTag(open.category)}
             <div class="elapsed mt-2" id="elapsed">${esc(fmtDuration(Date.now() - new Date(open.clockInAt).getTime()))}</div>
             <div class="f6 color-fg-muted">Since ${esc(fmtTime(open.clockInAt))}${open.event ? ` · ${esc(open.event)}` : ""}</div>
           </div>
@@ -256,7 +265,7 @@ function sessionRow(s) {
     return `
   <div class="Box-row session-row" data-id="${esc(s.id)}">
     <div class="main">
-      <div class="d-flex flex-items-center flex-wrap" style="gap:4px 8px"><span class="text-semibold">${esc(s.event || "Hours added by an admin")}</span>${statusTag("approved")}</div>
+      <div class="d-flex flex-items-center flex-wrap" style="gap:4px 8px"><span class="text-semibold">${esc(s.event || "Hours added by an admin")}</span>${categoryTag(s.category)}${statusTag("approved")}</div>
       <div class="f6 color-fg-muted mt-1">${esc(fmtDay(s.clockInAt))}, added by an admin</div>
       ${s.adminNote ? `<div class="flash f6 mt-2 py-2">${icon("info")} ${esc(s.adminNote)}</div>` : ""}
     </div>
@@ -272,7 +281,7 @@ function sessionRow(s) {
   return `
   <div class="Box-row session-row" data-id="${esc(s.id)}">
     <div class="main">
-      <div class="d-flex flex-items-center flex-wrap" style="gap:4px 8px"><span class="text-semibold">${esc(s.event || "Outreach")}</span>${statusTag(s.status)}</div>
+      <div class="d-flex flex-items-center flex-wrap" style="gap:4px 8px"><span class="text-semibold">${esc(s.event || (s.category === "shop" ? "Shop" : "Outreach"))}</span>${categoryTag(s.category)}${statusTag(s.status)}</div>
       <div class="f6 color-fg-muted mt-1">${esc(fmtDay(s.clockInAt))} · ${esc(range)}</div>
       <div class="photos">
         ${photoCell(s.clockInPhoto, "Clock in", s.clockInAt, s)}
@@ -289,6 +298,7 @@ function openClockSheet(kind) {
   const st = state.settings, open = state.open, user = state.user;
   const events = [...new Set(state.sessions.map((s) => s.event).filter(Boolean))].slice(0, 8);
   let photo = null, tick;
+  let category = localStorage.getItem("last-category") === "shop" ? "shop" : "outreach";
 
   const el = sheet.open(`
     <div class="Overlay-header Overlay-header--divided">
@@ -303,8 +313,15 @@ function openClockSheet(kind) {
     <div class="Overlay-body">
       ${kind === "in" ? `
       <div class="form-group">
+        <label>Type</label>
+        <div class="BtnGroup" role="group" id="cat-group">
+          <button type="button" class="btn BtnGroup-item ${category === "outreach" ? "selected" : ""}" aria-pressed="${category === "outreach"}" data-cat="outreach">Outreach</button>
+          <button type="button" class="btn BtnGroup-item ${category === "shop" ? "selected" : ""}" aria-pressed="${category === "shop"}" data-cat="shop">Shop</button>
+        </div>
+      </div>
+      <div class="form-group">
         <label for="event">Event</label>
-        <input class="form-control width-full" id="event" type="text" list="event-list" placeholder="example: FTC Meet 9/20" autocomplete="off" maxlength="80">
+        <input class="form-control width-full" id="event" type="text" list="event-list" placeholder="${category === "shop" ? "example: build session" : "example: FTC Meet 9/20"}" autocomplete="off" maxlength="80">
         <datalist id="event-list">${events.map((e) => `<option value="${esc(e)}">`).join("")}</datalist>
       </div>` : ""}
       <div class="flash flash-warn f6 mb-3">${icon("alert")} Required in the photo: ${specificObject(st) ? `<b>${esc(specificObject(st))}</b> (specified by an admin for this event)` : "the object specified by an admin for this event"}.</div>
@@ -322,6 +339,12 @@ function openClockSheet(kind) {
 
   tick = setInterval(() => { const n = $("#now-time", el); if (n) n.textContent = fmtTime(new Date()); }, 1000);
   $("#cancel", el).addEventListener("click", () => sheet.close());
+  $$("#cat-group button", el).forEach((b) => b.addEventListener("click", () => {
+    category = b.dataset.cat;
+    $$("#cat-group button", el).forEach((x) => { x.classList.toggle("selected", x === b); x.setAttribute("aria-pressed", String(x === b)); });
+    const ev = $("#event", el); if (ev) ev.placeholder = category === "shop" ? "example: build session" : "example: FTC Meet 9/20";
+    $("#confirm", el).textContent = "Clock in";
+  }));
 
   const wrap = $("#capture-wrap", el), confirm = $("#confirm", el), err = $("#clock-error", el);
   const emptyCapture = `<label class="capture d-block" for="photo-input">${icon("device-camera", 24)}<div class="text-semibold">Take photo</div><input id="photo-input" type="file" accept="image/*" capture="environment"></label>`;
@@ -350,10 +373,11 @@ function openClockSheet(kind) {
     if (!photo) { err.textContent = "A photo is required."; return; }
     setBusy(confirm, true, kind === "in" ? "Clocking in" : "Clocking out");
     try {
-      if (kind === "in") await db.clockIn({ event: $("#event", el).value, photoBlob: photo.blob });
+      if (kind === "in") { await db.clockIn({ event: $("#event", el).value, photoBlob: photo.blob, category }); localStorage.setItem("last-category", category); }
       else await db.clockOut({ sessionId: open.id, photoBlob: photo.blob, note: $("#note", el).value });
       sheet.close();
-      toast(kind === "in" ? `Clocked in at ${fmtTime(new Date())}.` : `Clocked out at ${fmtTime(new Date())}. Waiting for review.`, "gold");
+      const autoApproved = kind === "out" && open.category === "shop" && !state.settings.shopRequiresReview;
+      toast(kind === "in" ? `Clocked in at ${fmtTime(new Date())}.` : autoApproved ? `Clocked out at ${fmtTime(new Date())}. Shop hours recorded.` : `Clocked out at ${fmtTime(new Date())}. Waiting for review.`, "gold");
       await refresh();
     } catch (ex) {
       err.textContent = ex.message;

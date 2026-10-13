@@ -1,12 +1,12 @@
 // Lead (admin) app: separate sign-in, review queue with both photos, live clock-ins, roster with progress, settings.
 
 import { db, ready, suggestHours } from "./db.js";
-import { $, $$, esc, fmtDay, fmtDate, fmtTime, fmtHours, fmtDuration, hoursBetween, roundQuarter, progressBar, statusTag, toast, sheet, liveTimer, setBusy, csvDownload, initials } from "./ui.js";
+import { $, $$, esc, fmtDay, fmtDate, fmtTime, fmtHours, fmtDuration, hoursBetween, roundQuarter, progressBar, statusTag, categoryTag, toast, sheet, liveTimer, setBusy, csvDownload, initials } from "./ui.js";
 import { photoCell, hydratePhotos } from "./photos-ui.js";
 import { icon } from "./icons.js";
 
 const app = $("#app"), top = $("#topbar-right");
-const state = { admin: null, settings: null, sessions: [], members: [], tab: "review", filter: "pending", search: "", sort: "name", editing: new Set(), timers: [], loading: false };
+const state = { admin: null, settings: null, sessions: [], members: [], tab: "review", filter: "pending", cat: "all", search: "", sort: "name", editing: new Set(), timers: [], loading: false };
 
 (async function boot() {
   try { await ready; } catch (e) { app.innerHTML = `<div class="blankslate">${icon("alert", 24)}<h3 class="blankslate-heading">Couldn't start</h3><p>${esc(e.message)}</p></div>`; return; }
@@ -77,6 +77,7 @@ function renderDash() {
   const active = members.filter((m) => !m.excused);
   const done = active.filter((m) => m.approvedHours >= req).length;
   const totalApproved = members.reduce((a, m) => a + m.approvedHours, 0);
+  const totalShop = members.reduce((a, m) => a + (m.shopHours || 0), 0);
 
   top.innerHTML = `<span class="f6 hide-sm-inline mr-3" style="color:var(--header-fgColor-default)">${esc(admin.name || admin.email)}</span><button class="btn btn-sm btn-header" id="signout">${icon("sign-out")}Sign out</button>`;
   $("#signout").addEventListener("click", async () => { await db.adminSignOut(); await refresh(); });
@@ -91,7 +92,8 @@ function renderDash() {
     <div class="Box p-3 stat"><div class="l">Waiting for review</div><div class="n">${pending.length}</div></div>
     <div class="Box p-3 stat"><div class="l">Clocked in now</div><div class="n">${open.length}</div></div>
     <div class="Box p-3 stat"><div class="l">Members done</div><div class="n">${done}<span class="color-fg-muted f4"> / ${active.length}</span></div></div>
-    <div class="Box p-3 stat"><div class="l">Hours approved</div><div class="n">${esc(fmtHours(totalApproved))}</div></div>
+    <div class="Box p-3 stat"><div class="l">Outreach hours approved</div><div class="n">${esc(fmtHours(totalApproved))}</div></div>
+    <div class="Box p-3 stat"><div class="l">Shop hours</div><div class="n">${esc(fmtHours(totalShop))}</div></div>
   </div>
   <nav class="UnderlineNav mb-3" aria-label="Sections">
     <div class="UnderlineNav-body" role="tablist">
@@ -112,16 +114,19 @@ function renderPanel() {
 /* ---------------- review ---------------- */
 function renderReview(panel) {
   const filters = [["pending", "Waiting"], ["approved", "Approved"], ["rejected", "Sent back"], ["all", "All"]];
-  const list = state.sessions.filter((s) => s.status !== "open" && (state.filter === "all" || s.status === state.filter));
+  const cats = [["all", "All"], ["outreach", "Outreach"], ["shop", "Shop"]];
+  const list = state.sessions.filter((s) => s.status !== "open" && (state.filter === "all" || s.status === state.filter) && (state.cat === "all" || (s.category || "outreach") === state.cat));
   panel.innerHTML = `
     <div class="toolbar mb-3">
       <div class="BtnGroup">${filters.map(([k, l]) => `<button type="button" class="btn btn-sm BtnGroup-item ${state.filter === k ? "selected" : ""}" aria-pressed="${state.filter === k}" data-f="${k}">${l}</button>`).join("")}</div>
+      <div class="BtnGroup">${cats.map(([k, l]) => `<button type="button" class="btn btn-sm BtnGroup-item ${state.cat === k ? "selected" : ""}" aria-pressed="${state.cat === k}" data-c="${k}">${l}</button>`).join("")}</div>
       <span class="f6 color-fg-muted">${list.length} session${list.length === 1 ? "" : "s"}</span>
     </div>
     <div id="review-list">
       ${list.length ? list.map((s) => reviewCard(s)).join("") : `<div class="Box"><div class="blankslate">${icon("checklist", 24)}<h3 class="blankslate-heading">${state.filter === "pending" ? "No sessions waiting for review" : "No sessions"}</h3></div></div>`}
     </div>`;
-  $$(".BtnGroup-item", panel).forEach((b) => b.addEventListener("click", () => { state.filter = b.dataset.f; renderPanel(); }));
+  $$(".BtnGroup-item[data-f]", panel).forEach((b) => b.addEventListener("click", () => { state.filter = b.dataset.f; renderPanel(); }));
+  $$(".BtnGroup-item[data-c]", panel).forEach((b) => b.addEventListener("click", () => { state.cat = b.dataset.c; renderPanel(); }));
   bindReviewCards(panel);
   hydratePhotos(panel);
 }
@@ -136,10 +141,10 @@ function reviewCard(s) {
     <div class="Box-header d-flex">
       <span class="initials">${esc(initials(s.userName || s.userEmail))}</span>
       <div class="flex-auto"><div class="text-semibold">${esc(s.userName || s.userEmail)}</div><div class="f6 color-fg-muted">${s.userGrade ? `Grade ${esc(s.userGrade)} · ` : ""}${esc(s.userEmail)}</div></div>
-      ${statusTag(s.status)}
+      ${categoryTag(s.category)} ${statusTag(s.status)}
     </div>
     <div class="Box-body">
-      <div><b>${esc(s.event || (s.manual ? "Hours added by an admin" : "Outreach"))}</b> <span class="color-fg-muted">· ${esc(fmtDate(s.clockInAt))}</span></div>
+      <div><b>${esc(s.event || (s.manual ? "Hours added by an admin" : s.category === "shop" ? "Shop" : "Outreach"))}</b> <span class="color-fg-muted">· ${esc(fmtDate(s.clockInAt))}</span></div>
       ${s.manual ? `<div class="f6 color-fg-muted mt-1">Added by an admin, no photos</div>` : `<div class="photos">
         ${photoCell(s.clockInPhoto, "Clock in", s.clockInAt, s)}
         ${photoCell(s.clockOutPhoto, "Clock out", s.clockOutAt, s)}
@@ -199,7 +204,7 @@ function renderLive(panel) {
       <div class="Box-header d-flex">
         <span class="initials">${esc(initials(s.userName || s.userEmail))}</span>
         <div class="flex-auto"><div class="text-semibold">${esc(s.userName || s.userEmail)}</div><div class="f6 color-fg-muted">${esc(s.event || "Outreach")} · since ${esc(fmtTime(s.clockInAt))}, ${esc(fmtDay(s.clockInAt))}</div></div>
-        <span class="State State--open"><span class="dot"></span>Clocked in</span>
+        ${categoryTag(s.category)} <span class="State State--open"><span class="dot"></span>Clocked in</span>
       </div>
       <div class="Box-body d-flex flex-wrap" style="gap:16px">
         <div class="photos mt-0" style="grid-template-columns:1fr;max-width:200px">${photoCell(s.clockInPhoto, "Clock in", s.clockInAt, s)}</div>
@@ -242,7 +247,7 @@ function renderMembers(panel) {
         <div class="d-flex flex-items-center" style="gap:12px">
           <span class="initials small">${esc(initials(m.name || m.email))}</span>
           <div class="flex-auto" style="min-width:0"><span class="text-semibold">${esc(m.name || m.email)}</span>${m.role === "admin" ? ` <span class="Label Label--admin ml-1">Admin</span>` : ""}${m.excused ? ` <span class="Label Label--secondary ml-1">Excused</span>` : ""}</div>
-          <div class="nums"><b>${esc(fmtHours(m.approvedHours))}</b><small> / ${esc(fmtHours(req))} h</small></div>
+          <div class="nums"><b>${esc(fmtHours(m.approvedHours))}</b><small> / ${esc(fmtHours(req))} h</small><br><small>Shop ${esc(fmtHours(m.shopHours || 0))} h${Number(state.settings.requiredShopHours) > 0 ? ` / ${esc(fmtHours(state.settings.requiredShopHours))}` : ""}</small></div>
         </div>
         ${progressBar({ approved: m.approvedHours, pending: m.pendingHours, required: req, large: false, legend: false })}
         <div class="d-flex flex-justify-between f6 color-fg-muted mt-1">
@@ -281,14 +286,14 @@ function renderMembers(panel) {
   const search = $("#member-search", panel);
   search.addEventListener("input", () => { state.search = search.value; const pos = search.selectionStart; renderPanel(); const s2 = $("#member-search"); s2.focus(); s2.setSelectionRange(pos, pos); });
   $("#export-members", panel).addEventListener("click", () => {
-    const rows = [["Name", "Email", "Grade", "Approved hours", "Waiting for review (hours)", "Required hours", "Status", "Excused note"]];
-    state.members.forEach((m) => rows.push([m.name, m.email, m.grade, fmtHours(m.approvedHours), fmtHours(m.pendingHours), req, m.excused ? "Excused" : m.approvedHours >= req ? "Requirement met" : "In progress", m.excusedNote || ""]));
+    const rows = [["Name", "Email", "Grade", "Outreach hours approved", "Outreach waiting for review (hours)", "Required outreach hours", "Shop hours", "Status", "Excused note"]];
+    state.members.forEach((m) => rows.push([m.name, m.email, m.grade, fmtHours(m.approvedHours), fmtHours(m.pendingHours), req, fmtHours(m.shopHours || 0), m.excused ? "Excused" : m.approvedHours >= req ? "Requirement met" : "In progress", m.excusedNote || ""]));
     csvDownload(`outreach-roster-${state.settings.semesterName.replace(/\s+/g, "-").toLowerCase()}.csv`, rows);
   });
   $("#export-sessions", panel).addEventListener("click", () => {
     const iso = (v) => { if (!v) return ""; const d = new Date(v); const p = (n) => String(n).padStart(2, "0"); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`; };
-    const rows = [["Date", "Member email", "Event", "Clock in", "Clock out", "Hours on clock", "Status", "Approved hours", "Admin note", "Member name", "Type"]];
-    state.sessions.forEach((s) => rows.push([iso(s.clockInAt).slice(0, 10), s.userEmail, s.event, s.manual ? "" : iso(s.clockInAt).slice(11), s.manual ? "" : iso(s.clockOutAt).slice(11), s.manual ? "" : s.clockOutAt ? fmtHours(hoursBetween(s.clockInAt, s.clockOutAt)) : "", ({ pending: "Waiting", approved: "Approved", rejected: "Sent back", open: "Open" })[s.status], s.approvedHours ?? "", s.adminNote, s.userName, s.manual ? "Added by admin" : "Clock in/out"]));
+    const rows = [["Date", "Member email", "Category", "Event", "Clock in", "Clock out", "Hours on clock", "Status", "Approved hours", "Admin note", "Member name", "Type"]];
+    state.sessions.forEach((s) => rows.push([iso(s.clockInAt).slice(0, 10), s.userEmail, s.category === "shop" ? "Shop" : "Outreach", s.event, s.manual ? "" : iso(s.clockInAt).slice(11), s.manual ? "" : iso(s.clockOutAt).slice(11), s.manual ? "" : s.clockOutAt ? fmtHours(hoursBetween(s.clockInAt, s.clockOutAt)) : "", ({ pending: "Waiting", approved: "Approved", rejected: "Sent back", open: "Open" })[s.status], s.approvedHours ?? "", s.adminNote, s.userName, s.manual ? "Added by admin" : "Clock in/out"]));
     csvDownload(`outreach-sessions-${state.settings.semesterName.replace(/\s+/g, "-").toLowerCase()}.csv`, rows);
   });
 }
@@ -311,6 +316,7 @@ function openAddHours(m) {
         <div class="form-group"><label for="ah-hours">Hours</label><input class="form-control width-full" id="ah-hours" type="number" inputmode="decimal" step="0.25" min="0.25" max="24" value="1"></div>
         <div class="form-group"><label for="ah-date">Date</label><input class="form-control width-full" id="ah-date" type="date" value="${today}"></div>
       </div>
+      <div class="form-group"><label for="ah-cat">Type</label><select class="form-select width-full" id="ah-cat"><option value="outreach">Outreach</option><option value="shop">Shop</option></select></div>
       <div class="form-group"><label for="ah-event">Event</label><input class="form-control width-full" id="ah-event" type="text" maxlength="80" placeholder="example: FTC Meet 9/20"></div>
       <div class="form-group"><label for="ah-note">Note to ${esc(first)} <span class="text-normal color-fg-muted">(optional)</span></label><input class="form-control width-full" id="ah-note" type="text" maxlength="300"></div>
       <div class="form-error" id="ah-error"></div>
@@ -328,7 +334,7 @@ function openAddHours(m) {
     if (!(h > 0) || h > 24) { err.textContent = "Hours must be between 0.25 and 24."; return; }
     setBusy(save, true, "Adding");
     try {
-      await db.addHours({ userId: m.id, hours: h, event: $("#ah-event", el).value, note: $("#ah-note", el).value, date: $("#ah-date", el).value });
+      await db.addHours({ userId: m.id, hours: h, event: $("#ah-event", el).value, note: $("#ah-note", el).value, date: $("#ah-date", el).value, category: $("#ah-cat", el).value });
       sheet.close();
       toast(`Added ${fmtHours(h)} hours for ${m.name || m.email}.`, "gold");
       await loadData(); renderDash();
@@ -406,7 +412,11 @@ function renderSettings(panel) {
             <div class="form-group"><label for="semesterStart">Start</label><input class="form-control width-full" id="semesterStart" name="semesterStart" type="date" value="${esc(st.semesterStart)}" required></div>
             <div class="form-group"><label for="semesterEnd">End</label><input class="form-control width-full" id="semesterEnd" name="semesterEnd" type="date" value="${esc(st.semesterEnd)}" required></div>
           </div>
-          <div class="form-group"><label for="requiredHours">Required hours per member</label><input class="form-control" id="requiredHours" name="requiredHours" type="number" step="0.5" min="0" value="${esc(st.requiredHours)}" required style="max-width:160px"></div>
+          <div class="field-row">
+            <div class="form-group"><label for="requiredHours">Required outreach hours</label><input class="form-control width-full" id="requiredHours" name="requiredHours" type="number" step="0.5" min="0" value="${esc(st.requiredHours)}" required></div>
+            <div class="form-group"><label for="requiredShopHours">Required shop hours</label><input class="form-control width-full" id="requiredShopHours" name="requiredShopHours" type="number" step="0.5" min="0" value="${esc(st.requiredShopHours ?? 0)}" required><span class="note">0 means tracked only.</span></div>
+          </div>
+          <div class="form-checkbox"><label><input type="checkbox" id="shopRequiresReview" name="shopRequiresReview" ${st.shopRequiresReview ? "checked" : ""}> Shop sessions need admin review</label><p class="note">Off: shop hours count as soon as the member clocks out.</p></div>
           <div class="form-group"><label for="verificationObject">Required object in every photo</label><input class="form-control width-full" id="verificationObject" name="verificationObject" type="text" value="${esc(st.verificationObject)}" maxlength="80" required></div>
           <div class="form-error" id="settings-error"></div>
           <button class="btn btn-primary" type="submit">Save</button>
@@ -433,7 +443,7 @@ function renderSettings(panel) {
     const f = Object.fromEntries(new FormData(e.currentTarget).entries());
     if (f.semesterEnd < f.semesterStart) { err.textContent = "End date is before start date."; return; }
     setBusy(btn, true, "Saving");
-    try { state.settings = await db.updateSettings({ ...f, requiredHours: Number(f.requiredHours) }); toast("Saved.", "gold"); await loadData(); renderDash(); }
+    try { state.settings = await db.updateSettings({ ...f, requiredHours: Number(f.requiredHours), requiredShopHours: Number(f.requiredShopHours) || 0, shopRequiresReview: !!f.shopRequiresReview }); toast("Saved.", "gold"); await loadData(); renderDash(); }
     catch (ex) { err.textContent = ex.message; setBusy(btn, false); }
   });
   $$(".role", panel).forEach((b) => b.addEventListener("click", async () => {

@@ -32,9 +32,13 @@ create table if not exists public.settings (
   semester_end         date not null default '2026-12-18',
   required_hours       numeric not null default 10,
   verification_object  text not null default 'the object specified by an admin',
+  required_shop_hours  numeric not null default 0,      -- 0 = shop hours are tracked but not required
+  shop_requires_review boolean not null default false,  -- false = shop hours count as soon as the member clocks out
   updated_at           timestamptz not null default now()
 );
 insert into public.settings (id) values (1) on conflict (id) do nothing;
+alter table public.settings add column if not exists required_shop_hours numeric not null default 0;
+alter table public.settings add column if not exists shop_requires_review boolean not null default false;
 
 create table if not exists public.sessions (
   id               uuid primary key default gen_random_uuid(),
@@ -51,10 +55,14 @@ create table if not exists public.sessions (
   reviewed_by      uuid references public.profiles (id),
   reviewed_at      timestamptz,
   manual           boolean not null default false,
+  category         text not null default 'outreach' check (category in ('outreach', 'shop')),
   created_at       timestamptz not null default now()
 );
 alter table public.sessions alter column clock_in_photo drop not null;
 alter table public.sessions add column if not exists manual boolean not null default false;
+alter table public.sessions add column if not exists category text not null default 'outreach';
+alter table public.sessions drop constraint if exists sessions_category_check;
+alter table public.sessions add constraint sessions_category_check check (category in ('outreach', 'shop'));
 create index if not exists sessions_user_time on public.sessions (user_id, clock_in_at desc);
 create index if not exists sessions_status on public.sessions (status);
 
@@ -111,9 +119,27 @@ begin
   return s;
 end $$;
 
+-- same as clock_in, with the category (outreach or shop)
+create or replace function public.clock_in(p_event text, p_photo text, p_category text)
+returns public.sessions language plpgsql security definer set search_path = public as $$
+declare s public.sessions; c text := coalesce(nullif(p_category, ''), 'outreach');
+begin
+  if auth.uid() is null then raise exception 'Sign in first'; end if;
+  if c not in ('outreach', 'shop') then raise exception 'Unknown category'; end if;
+  if p_photo is null or p_photo = '' then raise exception 'A photo is needed to clock in'; end if;
+  if exists (select 1 from public.sessions where user_id = auth.uid() and status = 'open') then
+    raise exception 'You are already clocked in. Clock out first.';
+  end if;
+  insert into public.sessions (user_id, event, clock_in_photo, category)
+  values (auth.uid(), coalesce(left(p_event, 80), ''), p_photo, c)
+  returning * into s;
+  return s;
+end $$;
+
+-- shop sessions count right away unless settings.shop_requires_review is on
 create or replace function public.clock_out(p_session uuid, p_photo text, p_note text)
 returns public.sessions language plpgsql security definer set search_path = public as $$
-declare s public.sessions;
+declare s public.sessions; h numeric;
 begin
   if auth.uid() is null then raise exception 'Sign in first'; end if;
   if p_photo is null or p_photo = '' then raise exception 'A photo is needed to clock out'; end if;
@@ -122,6 +148,10 @@ begin
    where id = p_session and user_id = auth.uid() and status = 'open'
   returning * into s;
   if s.id is null then raise exception 'No open session found'; end if;
+  if s.category = 'shop' and not coalesce((select shop_requires_review from public.settings where id = 1), false) then
+    h := round(extract(epoch from (s.clock_out_at - s.clock_in_at)) / 3600 * 4) / 4;
+    update public.sessions set status = 'approved', approved_hours = h, reviewed_at = now() where id = s.id returning * into s;
+  end if;
   return s;
 end $$;
 
@@ -203,17 +233,36 @@ begin
   end;
 end $$;
 
-grant execute on function public.is_admin(), public.clock_in(text, text), public.clock_out(uuid, text, text),
+-- same as add_hours, with the category
+create or replace function public.add_hours(p_user uuid, p_hours numeric, p_event text, p_note text, p_date date, p_category text)
+returns public.sessions language plpgsql security definer set search_path = public as $$
+declare s public.sessions; t timestamptz; c text := coalesce(nullif(p_category, ''), 'outreach');
+begin
+  if not public.is_admin() then raise exception 'Only an admin can add hours'; end if;
+  if c not in ('outreach', 'shop') then raise exception 'Unknown category'; end if;
+  if p_hours is null or p_hours <= 0 or p_hours > 24 then raise exception 'Hours must be between 0.25 and 24'; end if;
+  if not exists (select 1 from public.profiles where id = p_user) then raise exception 'Member not found'; end if;
+  t := (coalesce(p_date, current_date)::timestamp + interval '12 hours') at time zone 'UTC';
+  insert into public.sessions (user_id, event, clock_in_at, clock_out_at, status, approved_hours, admin_note, reviewed_by, reviewed_at, manual, category)
+  values (p_user, coalesce(left(p_event, 80), ''), t, t + (p_hours * interval '1 hour'), 'approved', p_hours,
+          nullif(left(coalesce(p_note, ''), 300), ''), auth.uid(), now(), true, c)
+  returning * into s;
+  return s;
+end $$;
+
+grant execute on function public.is_admin(), public.clock_in(text, text), public.clock_in(text, text, text), public.clock_out(uuid, text, text),
   public.review_session(uuid, text, numeric, text), public.close_session(uuid, text), public.remove_member(uuid),
-  public.add_hours(uuid, numeric, text, text, date), public.admin_set_password(uuid, text) to authenticated;
+  public.add_hours(uuid, numeric, text, text, date), public.add_hours(uuid, numeric, text, text, date, text), public.admin_set_password(uuid, text) to authenticated;
 
 -- ---------------------------------------------------------------- progress view
 create or replace view public.member_progress with (security_invoker = true) as
 select p.id, p.name, p.email, p.grade, p.role,
-  coalesce(sum(case when s.status = 'approved' then s.approved_hours end), 0)                                                  as approved_hours,
-  coalesce(sum(case when s.status = 'pending'  then extract(epoch from (s.clock_out_at - s.clock_in_at)) / 3600 end), 0)       as pending_hours,
-  count(s.id) filter (where s.status = 'open')                                                                                  as open_sessions,
-  p.excused, p.excused_note
+  coalesce(sum(case when s.status = 'approved' and s.category = 'outreach' then s.approved_hours end), 0)                                            as approved_hours,
+  coalesce(sum(case when s.status = 'pending'  and s.category = 'outreach' then extract(epoch from (s.clock_out_at - s.clock_in_at)) / 3600 end), 0) as pending_hours,
+  count(s.id) filter (where s.status = 'open')                                                                                                       as open_sessions,
+  p.excused, p.excused_note,
+  coalesce(sum(case when s.status = 'approved' and s.category = 'shop' then s.approved_hours end), 0)                                                as shop_hours,
+  coalesce(sum(case when s.status = 'pending'  and s.category = 'shop' then extract(epoch from (s.clock_out_at - s.clock_in_at)) / 3600 end), 0)     as shop_pending_hours
 from public.profiles p
 left join public.settings st on st.id = 1
 left join public.sessions s

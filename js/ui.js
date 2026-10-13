@@ -45,6 +45,11 @@ export const initials = (name = "") => name.trim().split(/\s+/).slice(0, 2).map(
 
 /* ---------- status labels (Primer Label) ---------- */
 export const STATUS_LABEL = { open: "Clocked in", pending: "Waiting for review", approved: "Approved", rejected: "Sent back" };
+export const CATEGORY_LABEL = { outreach: "Outreach", shop: "Shop" };
+export function categoryTag(cat) {
+  const c = cat === "shop" ? "shop" : "outreach";
+  return `<span class="Label Label--secondary Label--cat-${c}">${CATEGORY_LABEL[c]}</span>`;
+}
 export function statusTag(status) {
   const cls = { open: "Label--live", pending: "Label--secondary", approved: "Label--approved", rejected: "Label--danger" }[status] || "Label--secondary";
   const ic = { open: icon("dot-fill", 12), approved: icon("check", 12), rejected: icon("x", 12), pending: icon("clock", 12) }[status] || "";

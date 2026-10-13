@@ -60,11 +60,13 @@ function seedState() {
     { id: "s5", userId: "u-jordan", event: "Farmers market booth", clockInAt: day(1, 8, 55), clockOutAt: day(1, 11, 45), status: "pending", approvedHours: null, adminNote: "" },
     { id: "s6", userId: "u-sam", event: "Farmers market booth", clockInAt: day(1, 9, 30), clockOutAt: day(1, 9, 41), status: "rejected", approvedHours: null, adminNote: "Photos are 11 minutes apart. Clock out when you leave, not before.", reviewedAt: day(0, 8) },
     { id: "s7", userId: "u-sam", event: "Middle school FLL mentoring", clockInAt: day(8, 15, 30), clockOutAt: day(8, 18, 3), status: "approved", approvedHours: 2.5, adminNote: "", reviewedAt: day(7, 8) },
-  ].map((s) => ({ ...s, clockInPhoto: `sample/${s.id}-in`, clockOutPhoto: `sample/${s.id}-out`, note: "" }));
+    { id: "s8", userId: "u-alex", event: "Build session", clockInAt: day(3, 15, 30), clockOutAt: day(3, 18, 32), status: "approved", approvedHours: 3, adminNote: "", reviewedAt: day(3, 18, 32), category: "shop" },
+    { id: "s9", userId: "u-jordan", event: "Build session", clockInAt: day(3, 15, 35), clockOutAt: day(3, 17, 50), status: "approved", approvedHours: 2.25, adminNote: "", reviewedAt: day(3, 17, 50), category: "shop" },
+  ].map((s) => ({ category: "outreach", ...s, clockInPhoto: `sample/${s.id}-in`, clockOutPhoto: `sample/${s.id}-out`, note: "" }));
   const y = new Date().getFullYear();
   return {
     users, sessions, auth: null, adminAuth: false,
-    settings: { semesterName: `Fall ${y}`, semesterStart: `${y}-08-17`, semesterEnd: `${y}-12-18`, requiredHours: 10, verificationObject: GENERIC_OBJECT },
+    settings: { semesterName: `Fall ${y}`, semesterStart: `${y}-08-17`, semesterEnd: `${y}-12-18`, requiredHours: 10, verificationObject: GENERIC_OBJECT, requiredShopHours: 0, shopRequiresReview: false },
   };
 }
 
@@ -81,6 +83,8 @@ class DemoDb {
     if (/team banner|specified by a lead/i.test(this.state.settings?.verificationObject || "")) { this.state.settings.verificationObject = GENERIC_OBJECT; this.save(); }
     this.state.users.forEach((u) => { if (u.excused === undefined) { u.excused = false; u.excusedNote = ""; } });
     if (Number(this.state.settings?.requiredHours) === 9) { this.state.settings.requiredHours = 10; this.save(); }
+    if (this.state.settings.requiredShopHours === undefined) { this.state.settings.requiredShopHours = 0; this.state.settings.shopRequiresReview = false; this.save(); }
+    this.state.sessions.forEach((s) => { if (!s.category) s.category = "outreach"; });
     if (!this.state.users.some((u) => u.role === "admin")) { const sam = this.state.users.find((u) => u.id === "u-sam"); if (sam) { sam.role = "admin"; this.save(); } }
   }
   async init() { return this; }
@@ -139,13 +143,14 @@ class DemoDb {
     const s = this.state.sessions.find((x) => x.userId === u.id && x.status === "open");
     return s ? this.decorate(s) : null;
   }
-  async clockIn({ event, photoBlob }) {
+  async clockIn({ event, photoBlob, category }) {
     const u = this.requireUser();
     if (this.state.sessions.some((x) => x.userId === u.id && x.status === "open")) throw new Error("Already clocked in. Clock out first.");
     if (!photoBlob) throw new Error("A photo is required to clock in.");
+    const cat = category === "shop" ? "shop" : "outreach";
     const id = uid(), path = `${u.id}/${id}-in.jpg`;
     await idb.put(path, photoBlob);
-    const s = { id, userId: u.id, event: (event || "").trim(), clockInAt: new Date().toISOString(), clockInPhoto: path, clockOutAt: null, clockOutPhoto: null, note: "", status: "open", approvedHours: null, adminNote: "", reviewedAt: null };
+    const s = { id, userId: u.id, event: (event || "").trim(), category: cat, clockInAt: new Date().toISOString(), clockInPhoto: path, clockOutAt: null, clockOutPhoto: null, note: "", status: "open", approvedHours: null, adminNote: "", reviewedAt: null };
     this.state.sessions.push(s); this.save();
     return this.decorate(s);
   }
@@ -157,6 +162,9 @@ class DemoDb {
     const path = `${u.id}/${s.id}-out.jpg`;
     await idb.put(path, photoBlob);
     Object.assign(s, { clockOutAt: new Date().toISOString(), clockOutPhoto: path, note: (note || "").trim(), status: "pending" });
+    if (s.category === "shop" && !this.state.settings.shopRequiresReview) {
+      Object.assign(s, { status: "approved", approvedHours: roundQuarter(hoursBetween(s.clockInAt, s.clockOutAt)), reviewedAt: s.clockOutAt });
+    }
     this.save();
     return this.decorate(s);
   }
@@ -164,14 +172,15 @@ class DemoDb {
   /* progress helpers */
   totalsFor(userId) {
     const st = this.state.settings;
-    let approved = 0, pending = 0, open = 0;
+    let approved = 0, pending = 0, open = 0, shop = 0, shopPending = 0;
     for (const s of this.state.sessions) {
       if (s.userId !== userId || !inRange(s.clockInAt, st.semesterStart, st.semesterEnd)) continue;
-      if (s.status === "approved") approved += Number(s.approvedHours) || 0;
-      else if (s.status === "pending") pending += hoursBetween(s.clockInAt, s.clockOutAt);
+      const isShop = s.category === "shop";
+      if (s.status === "approved") { if (isShop) shop += Number(s.approvedHours) || 0; else approved += Number(s.approvedHours) || 0; }
+      else if (s.status === "pending") { if (isShop) shopPending += hoursBetween(s.clockInAt, s.clockOutAt); else pending += hoursBetween(s.clockInAt, s.clockOutAt); }
       else if (s.status === "open") open++;
     }
-    return { approvedHours: approved, pendingHours: pending, openSessions: open };
+    return { approvedHours: approved, pendingHours: pending, openSessions: open, shopHours: shop, shopPendingHours: shopPending };
   }
   async myProgress() { const u = this.requireUser(); return this.totalsFor(u.id); }
 
@@ -223,14 +232,14 @@ class DemoDb {
     if (!String(name || "").trim()) throw new Error("Name is required.");
     u.name = String(name).trim(); u.grade = grade || ""; this.save();
   }
-  async addHours({ userId, hours, event, note, date }) {
+  async addHours({ userId, hours, event, note, date, category }) {
     this.requireAdmin();
     const u = this.state.users.find((x) => x.id === userId);
     if (!u) throw new Error("Member not found.");
     hours = Number(hours);
     if (!(hours > 0) || hours > 24) throw new Error("Hours must be between 0.25 and 24.");
     const start = date ? new Date(date + "T12:00:00") : new Date();
-    const s = { id: uid(), userId, event: (event || "").trim(), clockInAt: start.toISOString(), clockInPhoto: null, clockOutAt: new Date(start.getTime() + hours * 36e5).toISOString(), clockOutPhoto: null,
+    const s = { id: uid(), userId, event: (event || "").trim(), category: category === "shop" ? "shop" : "outreach", clockInAt: start.toISOString(), clockInPhoto: null, clockOutAt: new Date(start.getTime() + hours * 36e5).toISOString(), clockOutPhoto: null,
       note: "", status: "approved", approvedHours: hours, adminNote: (note || "").trim(), reviewedAt: new Date().toISOString(), manual: true };
     this.state.sessions.push(s); this.save();
     return this.decorate(s);
@@ -290,7 +299,7 @@ class SupaDb {
     return {
       id: r.id, userId: r.user_id, userName: m.name || r.user_name || "", userEmail: m.email || r.user_email || "", userGrade: m.grade || r.user_grade || "",
       event: r.event || "", clockInAt: r.clock_in_at, clockInPhoto: r.clock_in_photo, clockOutAt: r.clock_out_at, clockOutPhoto: r.clock_out_photo,
-      note: r.note || "", status: r.status, approvedHours: r.approved_hours == null ? null : Number(r.approved_hours), adminNote: r.admin_note || "", reviewedAt: r.reviewed_at, manual: !!r.manual,
+      note: r.note || "", status: r.status, approvedHours: r.approved_hours == null ? null : Number(r.approved_hours), adminNote: r.admin_note || "", reviewedAt: r.reviewed_at, manual: !!r.manual, category: r.category === "shop" ? "shop" : "outreach",
     };
   }
 
@@ -339,8 +348,8 @@ class SupaDb {
     const { data, error } = await this.sb.from("settings").select("*").eq("id", 1).limit(1);
     if (error) this.fail(error);
     const r = data && data[0];
-    if (!r) { const y = new Date().getFullYear(); return { semesterName: "This semester", semesterStart: `${y}-01-01`, semesterEnd: `${y}-12-31`, requiredHours: 10, verificationObject: GENERIC_OBJECT }; }
-    return { semesterName: r.semester_name, semesterStart: r.semester_start, semesterEnd: r.semester_end, requiredHours: Number(r.required_hours), verificationObject: r.verification_object };
+    if (!r) { const y = new Date().getFullYear(); return { semesterName: "This semester", semesterStart: `${y}-01-01`, semesterEnd: `${y}-12-31`, requiredHours: 10, verificationObject: GENERIC_OBJECT, requiredShopHours: 0, shopRequiresReview: false }; }
+    return { semesterName: r.semester_name, semesterStart: r.semester_start, semesterEnd: r.semester_end, requiredHours: Number(r.required_hours), verificationObject: r.verification_object, requiredShopHours: Number(r.required_shop_hours || 0), shopRequiresReview: !!r.shop_requires_review };
   }
   async updateSettings(p) {
     const row = {};
@@ -349,8 +358,15 @@ class SupaDb {
     if (p.semesterEnd != null) row.semester_end = p.semesterEnd;
     if (p.requiredHours != null) row.required_hours = p.requiredHours;
     if (p.verificationObject != null) row.verification_object = p.verificationObject;
+    if (p.requiredShopHours != null) row.required_shop_hours = p.requiredShopHours;
+    if (p.shopRequiresReview != null) row.shop_requires_review = !!p.shopRequiresReview;
     row.updated_at = new Date().toISOString();
-    const { error } = await this.sb.from("settings").update(row).eq("id", 1);
+    let { error } = await this.sb.from("settings").update(row).eq("id", 1);
+    if (error && /required_shop_hours|shop_requires_review/.test(error.message || "")) {
+      // database hasn't been migrated for shop hours yet; save the rest
+      delete row.required_shop_hours; delete row.shop_requires_review;
+      ({ error } = await this.sb.from("settings").update(row).eq("id", 1));
+    }
     if (error) this.fail(error);
     return this.getSettings();
   }
@@ -372,12 +388,17 @@ class SupaDb {
     const { error } = await this.sb.storage.from(BUCKET).upload(path, blob, { contentType: "image/jpeg", upsert: true });
     if (error) this.fail(error, "Photo upload failed. Check your connection and try again.");
   }
-  async clockIn({ event, photoBlob }) {
+  async clockIn({ event, photoBlob, category }) {
     const u = await this.getUser(); if (!u) throw new Error("Signed out. Sign in again.");
     if (!photoBlob) throw new Error("A photo is required to clock in.");
     const path = `${u.id}/${Date.now()}-in.jpg`;
     await this.upload(path, photoBlob);
-    const { data, error } = await this.sb.rpc("clock_in", { p_event: (event || "").trim(), p_photo: path });
+    const cat = category === "shop" ? "shop" : "outreach";
+    let { data, error } = await this.sb.rpc("clock_in", { p_event: (event || "").trim(), p_photo: path, p_category: cat });
+    if (error && error.code === "PGRST202") {
+      if (cat === "shop") throw new Error("Shop hours aren't turned on yet. Ask an admin to run the database update.");
+      ({ data, error } = await this.sb.rpc("clock_in", { p_event: (event || "").trim(), p_photo: path }));
+    }
     if (error) this.fail(error);
     return this.norm({ ...data, member: u });
   }
@@ -392,10 +413,10 @@ class SupaDb {
   }
   async myProgress() {
     const u = await this.getUser(); if (!u) throw new Error("Signed out. Sign in again.");
-    const { data, error } = await this.sb.from("member_progress").select("approved_hours,pending_hours,open_sessions").eq("id", u.id).limit(1);
+    const { data, error } = await this.sb.from("member_progress").select("*").eq("id", u.id).limit(1);
     if (error) this.fail(error);
     const r = (data && data[0]) || {};
-    return { approvedHours: Number(r.approved_hours || 0), pendingHours: Number(r.pending_hours || 0), openSessions: Number(r.open_sessions || 0) };
+    return { approvedHours: Number(r.approved_hours || 0), pendingHours: Number(r.pending_hours || 0), openSessions: Number(r.open_sessions || 0), shopHours: Number(r.shop_hours || 0), shopPendingHours: Number(r.shop_pending_hours || 0) };
   }
 
   /* admin */
@@ -427,7 +448,7 @@ class SupaDb {
   async listMembers() {
     const { data, error } = await this.sb.from("member_progress").select("*").order("name");
     if (error) this.fail(error);
-    return data.map((r) => ({ id: r.id, name: r.name, email: r.email, grade: r.grade || "", role: r.role, excused: !!r.excused, excusedNote: r.excused_note || "", approvedHours: Number(r.approved_hours || 0), pendingHours: Number(r.pending_hours || 0), openSessions: Number(r.open_sessions || 0) }));
+    return data.map((r) => ({ id: r.id, name: r.name, email: r.email, grade: r.grade || "", role: r.role, excused: !!r.excused, excusedNote: r.excused_note || "", approvedHours: Number(r.approved_hours || 0), pendingHours: Number(r.pending_hours || 0), openSessions: Number(r.open_sessions || 0), shopHours: Number(r.shop_hours || 0), shopPendingHours: Number(r.shop_pending_hours || 0) }));
   }
   async setRole(userId, role) {
     const { error } = await this.sb.from("profiles").update({ role }).eq("id", userId);
@@ -441,8 +462,13 @@ class SupaDb {
     const { error } = await this.sb.from("profiles").update({ name: String(name || "").trim(), grade: grade || null }).eq("id", userId);
     if (error) this.fail(error);
   }
-  async addHours({ userId, hours, event, note, date }) {
-    const { data, error } = await this.sb.rpc("add_hours", { p_user: userId, p_hours: Number(hours), p_event: (event || "").trim(), p_note: (note || "").trim(), p_date: date || null });
+  async addHours({ userId, hours, event, note, date, category }) {
+    const cat = category === "shop" ? "shop" : "outreach";
+    let { data, error } = await this.sb.rpc("add_hours", { p_user: userId, p_hours: Number(hours), p_event: (event || "").trim(), p_note: (note || "").trim(), p_date: date || null, p_category: cat });
+    if (error && error.code === "PGRST202") {
+      if (cat === "shop") throw new Error("Shop hours aren't turned on yet. Run the database update (supabase/schema.sql) first.");
+      ({ data, error } = await this.sb.rpc("add_hours", { p_user: userId, p_hours: Number(hours), p_event: (event || "").trim(), p_note: (note || "").trim(), p_date: date || null }));
+    }
     if (error) this.fail(error);
     return this.norm(data);
   }
