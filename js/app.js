@@ -195,13 +195,13 @@ function renderHome() {
     </div>
   </div>
 
-  <div class="Box">
+  ${db.shopReady ? `<div class="Box">
     <div class="Box-header d-flex"><h2 class="Box-title flex-auto">Shop</h2></div>
     <div class="Box-body">
       <div class="big-number">${esc(fmtHours(shop))}<small>${reqShop > 0 ? `/ ${esc(fmtHours(reqShop))} hours` : "hours this semester"}</small></div>
       ${reqShop > 0 ? `<div class="mt-2">${progressBar({ approved: shop, pending: shopPending, required: reqShop, excused: user.excused })}</div>` : roundQuarter(shopPending) ? `<div class="f6 color-fg-muted mt-1">${esc(fmtHours(roundQuarter(shopPending)))} h waiting for review</div>` : ""}
     </div>
-  </div>
+  </div>` : ""}
 
   <div class="Box" id="status-card">
     <div class="Box-header"><h2 class="Box-title">Status</h2></div>
@@ -298,7 +298,7 @@ function openClockSheet(kind) {
   const st = state.settings, open = state.open, user = state.user;
   const events = [...new Set(state.sessions.map((s) => s.event).filter(Boolean))].slice(0, 8);
   let photo = null, tick;
-  let category = localStorage.getItem("last-category") === "shop" ? "shop" : "outreach";
+  let category = db.shopReady && localStorage.getItem("last-category") === "shop" ? "shop" : "outreach";
 
   const el = sheet.open(`
     <div class="Overlay-header Overlay-header--divided">
@@ -312,13 +312,13 @@ function openClockSheet(kind) {
     </div>
     <div class="Overlay-body">
       ${kind === "in" ? `
-      <div class="form-group">
+      ${db.shopReady ? `<div class="form-group">
         <label>Type</label>
         <div class="BtnGroup" role="group" id="cat-group">
           <button type="button" class="btn BtnGroup-item ${category === "outreach" ? "selected" : ""}" aria-pressed="${category === "outreach"}" data-cat="outreach">Outreach</button>
           <button type="button" class="btn BtnGroup-item ${category === "shop" ? "selected" : ""}" aria-pressed="${category === "shop"}" data-cat="shop">Shop</button>
         </div>
-      </div>
+      </div>` : ""}
       <div class="form-group">
         <label for="event">Event</label>
         <input class="form-control width-full" id="event" type="text" list="event-list" placeholder="${category === "shop" ? "example: build session" : "example: FTC Meet 9/20"}" autocomplete="off" maxlength="80">

@@ -77,6 +77,7 @@ class DemoDb {
     this.listeners = [];
     this.urlCache = new Map();
     this.recoveryPending = /type=recovery/.test(location.hash); // mirrors the Supabase reset link so the screen can be previewed in demo mode
+    this.shopReady = true;
     try { this.state = JSON.parse(localStorage.getItem(this.key)) || null; } catch (_) { this.state = null; }
     if (!this.state) { this.state = seedState(); this.save(); }
     // older demo data named a specific object; the wording is now "specified by a lead"
@@ -279,7 +280,7 @@ class DemoDb {
 const BUCKET = "clock-photos";
 
 class SupaDb {
-  constructor() { this.mode = "supabase"; this.listeners = []; this.urlCache = new Map(); this.profileCache = null; }
+  constructor() { this.mode = "supabase"; this.listeners = []; this.urlCache = new Map(); this.profileCache = null; this.shopReady = true; }
   async init() {
     const { createClient } = await import("https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm");
     this.sb = createClient(CFG.supabaseUrl, CFG.supabaseAnonKey, { auth: { persistSession: true, autoRefreshToken: true } });
@@ -348,6 +349,7 @@ class SupaDb {
     const { data, error } = await this.sb.from("settings").select("*").eq("id", 1).limit(1);
     if (error) this.fail(error);
     const r = data && data[0];
+    if (r) this.shopReady = r.required_shop_hours !== undefined; // false until supabase/schema.sql has been run for shop hours
     if (!r) { const y = new Date().getFullYear(); return { semesterName: "This semester", semesterStart: `${y}-01-01`, semesterEnd: `${y}-12-31`, requiredHours: 10, verificationObject: GENERIC_OBJECT, requiredShopHours: 0, shopRequiresReview: false }; }
     return { semesterName: r.semester_name, semesterStart: r.semester_start, semesterEnd: r.semester_end, requiredHours: Number(r.required_hours), verificationObject: r.verification_object, requiredShopHours: Number(r.required_shop_hours || 0), shopRequiresReview: !!r.shop_requires_review };
   }

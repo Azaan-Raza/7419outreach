@@ -88,12 +88,13 @@ function renderDash() {
     <h1 class="f3 text-semibold lh-condensed mb-0">${pending.length ? `${pending.length} session${pending.length === 1 ? "" : "s"} waiting for review` : "No sessions waiting for review"}</h1>
     <div class="page-sub">${esc(st.semesterName)}, ${esc(fmtHours(req))} hours required</div>
   </div>
+  ${!db.shopReady ? `<div class="flash flash-warn mb-3 f6">${icon("alert")} <b>Shop hours need a database update.</b> In Supabase: SQL editor → paste <code>supabase/schema.sql</code> → Run. Safe to run on the live data. Shop options stay hidden until then.</div>` : ""}
   <div class="stats mb-3">
     <div class="Box p-3 stat"><div class="l">Waiting for review</div><div class="n">${pending.length}</div></div>
     <div class="Box p-3 stat"><div class="l">Clocked in now</div><div class="n">${open.length}</div></div>
     <div class="Box p-3 stat"><div class="l">Members done</div><div class="n">${done}<span class="color-fg-muted f4"> / ${active.length}</span></div></div>
     <div class="Box p-3 stat"><div class="l">Outreach hours approved</div><div class="n">${esc(fmtHours(totalApproved))}</div></div>
-    <div class="Box p-3 stat"><div class="l">Shop hours</div><div class="n">${esc(fmtHours(totalShop))}</div></div>
+    ${db.shopReady ? `<div class="Box p-3 stat"><div class="l">Shop hours</div><div class="n">${esc(fmtHours(totalShop))}</div></div>` : ""}
   </div>
   <nav class="UnderlineNav mb-3" aria-label="Sections">
     <div class="UnderlineNav-body" role="tablist">
@@ -119,7 +120,7 @@ function renderReview(panel) {
   panel.innerHTML = `
     <div class="toolbar mb-3">
       <div class="BtnGroup">${filters.map(([k, l]) => `<button type="button" class="btn btn-sm BtnGroup-item ${state.filter === k ? "selected" : ""}" aria-pressed="${state.filter === k}" data-f="${k}">${l}</button>`).join("")}</div>
-      <div class="BtnGroup">${cats.map(([k, l]) => `<button type="button" class="btn btn-sm BtnGroup-item ${state.cat === k ? "selected" : ""}" aria-pressed="${state.cat === k}" data-c="${k}">${l}</button>`).join("")}</div>
+      ${db.shopReady ? `<div class="BtnGroup">${cats.map(([k, l]) => `<button type="button" class="btn btn-sm BtnGroup-item ${state.cat === k ? "selected" : ""}" aria-pressed="${state.cat === k}" data-c="${k}">${l}</button>`).join("")}</div>` : ""}
       <span class="f6 color-fg-muted">${list.length} session${list.length === 1 ? "" : "s"}</span>
     </div>
     <div id="review-list">
@@ -247,7 +248,7 @@ function renderMembers(panel) {
         <div class="d-flex flex-items-center" style="gap:12px">
           <span class="initials small">${esc(initials(m.name || m.email))}</span>
           <div class="flex-auto" style="min-width:0"><span class="text-semibold">${esc(m.name || m.email)}</span>${m.role === "admin" ? ` <span class="Label Label--admin ml-1">Admin</span>` : ""}${m.excused ? ` <span class="Label Label--secondary ml-1">Excused</span>` : ""}</div>
-          <div class="nums"><b>${esc(fmtHours(m.approvedHours))}</b><small> / ${esc(fmtHours(req))} h</small><br><small>Shop ${esc(fmtHours(m.shopHours || 0))} h${Number(state.settings.requiredShopHours) > 0 ? ` / ${esc(fmtHours(state.settings.requiredShopHours))}` : ""}</small></div>
+          <div class="nums"><b>${esc(fmtHours(m.approvedHours))}</b><small> / ${esc(fmtHours(req))} h</small>${db.shopReady ? `<br><small>Shop ${esc(fmtHours(m.shopHours || 0))} h${Number(state.settings.requiredShopHours) > 0 ? ` / ${esc(fmtHours(state.settings.requiredShopHours))}` : ""}</small>` : ""}</div>
         </div>
         ${progressBar({ approved: m.approvedHours, pending: m.pendingHours, required: req, large: false, legend: false })}
         <div class="d-flex flex-justify-between f6 color-fg-muted mt-1">
@@ -316,7 +317,7 @@ function openAddHours(m) {
         <div class="form-group"><label for="ah-hours">Hours</label><input class="form-control width-full" id="ah-hours" type="number" inputmode="decimal" step="0.25" min="0.25" max="24" value="1"></div>
         <div class="form-group"><label for="ah-date">Date</label><input class="form-control width-full" id="ah-date" type="date" value="${today}"></div>
       </div>
-      <div class="form-group"><label for="ah-cat">Type</label><select class="form-select width-full" id="ah-cat"><option value="outreach">Outreach</option><option value="shop">Shop</option></select></div>
+      ${db.shopReady ? `<div class="form-group"><label for="ah-cat">Type</label><select class="form-select width-full" id="ah-cat"><option value="outreach">Outreach</option><option value="shop">Shop</option></select></div>` : ""}
       <div class="form-group"><label for="ah-event">Event</label><input class="form-control width-full" id="ah-event" type="text" maxlength="80" placeholder="example: FTC Meet 9/20"></div>
       <div class="form-group"><label for="ah-note">Note to ${esc(first)} <span class="text-normal color-fg-muted">(optional)</span></label><input class="form-control width-full" id="ah-note" type="text" maxlength="300"></div>
       <div class="form-error" id="ah-error"></div>
@@ -334,7 +335,7 @@ function openAddHours(m) {
     if (!(h > 0) || h > 24) { err.textContent = "Hours must be between 0.25 and 24."; return; }
     setBusy(save, true, "Adding");
     try {
-      await db.addHours({ userId: m.id, hours: h, event: $("#ah-event", el).value, note: $("#ah-note", el).value, date: $("#ah-date", el).value, category: $("#ah-cat", el).value });
+      await db.addHours({ userId: m.id, hours: h, event: $("#ah-event", el).value, note: $("#ah-note", el).value, date: $("#ah-date", el).value, category: $("#ah-cat", el)?.value || "outreach" });
       sheet.close();
       toast(`Added ${fmtHours(h)} hours for ${m.name || m.email}.`, "gold");
       await loadData(); renderDash();
@@ -414,9 +415,9 @@ function renderSettings(panel) {
           </div>
           <div class="field-row">
             <div class="form-group"><label for="requiredHours">Required outreach hours</label><input class="form-control width-full" id="requiredHours" name="requiredHours" type="number" step="0.5" min="0" value="${esc(st.requiredHours)}" required></div>
-            <div class="form-group"><label for="requiredShopHours">Required shop hours</label><input class="form-control width-full" id="requiredShopHours" name="requiredShopHours" type="number" step="0.5" min="0" value="${esc(st.requiredShopHours ?? 0)}" required><span class="note">0 means tracked only.</span></div>
+            ${db.shopReady ? `<div class="form-group"><label for="requiredShopHours">Required shop hours</label><input class="form-control width-full" id="requiredShopHours" name="requiredShopHours" type="number" step="0.5" min="0" value="${esc(st.requiredShopHours ?? 0)}" required><span class="note">0 means tracked only.</span></div>` : ""}
           </div>
-          <div class="form-checkbox"><label><input type="checkbox" id="shopRequiresReview" name="shopRequiresReview" ${st.shopRequiresReview ? "checked" : ""}> Shop sessions need admin review</label><p class="note">Off: shop hours count as soon as the member clocks out.</p></div>
+          ${db.shopReady ? `<div class="form-checkbox"><label><input type="checkbox" id="shopRequiresReview" name="shopRequiresReview" ${st.shopRequiresReview ? "checked" : ""}> Shop sessions need admin review</label><p class="note">Off: shop hours count as soon as the member clocks out.</p></div>` : ""}
           <div class="form-group"><label for="verificationObject">Required object in every photo</label><input class="form-control width-full" id="verificationObject" name="verificationObject" type="text" value="${esc(st.verificationObject)}" maxlength="80" required></div>
           <div class="form-error" id="settings-error"></div>
           <button class="btn btn-primary" type="submit">Save</button>
@@ -443,7 +444,7 @@ function renderSettings(panel) {
     const f = Object.fromEntries(new FormData(e.currentTarget).entries());
     if (f.semesterEnd < f.semesterStart) { err.textContent = "End date is before start date."; return; }
     setBusy(btn, true, "Saving");
-    try { state.settings = await db.updateSettings({ ...f, requiredHours: Number(f.requiredHours), requiredShopHours: Number(f.requiredShopHours) || 0, shopRequiresReview: !!f.shopRequiresReview }); toast("Saved.", "gold"); await loadData(); renderDash(); }
+    try { state.settings = await db.updateSettings({ ...f, requiredHours: Number(f.requiredHours), ...(db.shopReady ? { requiredShopHours: Number(f.requiredShopHours) || 0, shopRequiresReview: !!f.shopRequiresReview } : {}) }); toast("Saved.", "gold"); await loadData(); renderDash(); }
     catch (ex) { err.textContent = ex.message; setBusy(btn, false); }
   });
   $$(".role", panel).forEach((b) => b.addEventListener("click", async () => {
