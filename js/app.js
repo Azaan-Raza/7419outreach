@@ -1,21 +1,21 @@
-// Member app: sign in, progress toward the semester requirement, clock in / clock out with a photo, history.
+// Member app: sign in, what's happening right now, outreach and shop progress, clock in / out with a photo, history.
 
 import { db, ready, suggestHours } from "./db.js";
-import { $, $$, esc, fmtDay, fmtTime, fmtHours, fmtDuration, roundQuarter, progressBar, statusTag, categoryTag, toast, sheet, isIOS, isStandalone, liveTimer, setBusy } from "./ui.js";
+import { $, $$, esc, fmtDay, fmtTime, fmtHours, fmtDuration, roundQuarter, progressBar, statusText, chip, segmented, toast, sheet, sheetHead, isIOS, isStandalone, liveTimer, setBusy, initials, CAMERA } from "./ui.js";
 import { pickPhoto, preparePhoto } from "./photo.js";
 import { photoCell, hydratePhotos } from "./photos-ui.js";
-import { icon } from "./icons.js";
 
-const app = $("#app");
-const top = $("#topbar-right");
-// Admins set the required photo object in Settings (it can change per event). A generic value means "no specific object named yet".
-const specificObject = (st) => (st?.verificationObject && !/specified by an? (lead|admin)/i.test(st.verificationObject) ? st.verificationObject : null);
+const app = $("#app"), navRight = $("#nav-right");
 const state = { user: null, settings: null, sessions: [], progress: null, open: null, authTab: "signin", loading: false };
 let stopTimer = null;
 
+// Admins set the required photo object in Settings (it can change per event). A generic value means none named yet.
+const specificObject = (st) => (st?.verificationObject && !/specified by an? (lead|admin)/i.test(st.verificationObject) ? st.verificationObject : null);
+const objectLine = (st) => (specificObject(st) ? `Required in the photo: <b>${esc(specificObject(st))}</b>.` : "Photos must include the object specified by an admin for the event.");
+
 /* ---------------- boot ---------------- */
 (async function boot() {
-  try { await ready; } catch (e) { app.innerHTML = `<div class="blankslate">${icon("alert", 24)}<h3 class="blankslate-heading">Couldn't start</h3><p>${esc(e.message)}</p></div>`; return; }
+  try { await ready; } catch (e) { app.innerHTML = `<div class="card"><p class="empty">Couldn't start: ${esc(e.message)}</p></div>`; return; }
   if (db.mode === "demo") $("#demo-banner").classList.remove("hidden");
   db.onAuthChange(() => refresh());
   await refresh();
@@ -33,71 +33,62 @@ async function refresh() {
       [state.sessions, state.progress] = await Promise.all([db.listMySessions(), db.myProgress()]);
       state.open = state.sessions.find((s) => s.status === "open") || null;
       renderHome();
-    } else {
-      renderLanding();
-    }
+    } else renderLanding();
   } catch (e) {
-    toast(e.message, "error");
+    toast(e.message);
     if (!state.user) renderLanding();
-  } finally {
-    state.loading = false;
-  }
+  } finally { state.loading = false; }
 }
 
 /* ---------------- sign in / create account ---------------- */
 function renderLanding() {
   if (stopTimer) { stopTimer(); stopTimer = null; }
-  top.innerHTML = "";
-  const st = state.settings || {};
+  navRight.innerHTML = "";
+  if (state.authTab === "forgot") return renderForgot();
+  const st = state.settings || {}, req = Number(st.requiredHours) || 10;
   const signup = state.authTab === "signup";
-  if (state.authTab === "forgot") { renderForgot(); return; }
   app.innerHTML = `
-  <div class="auth-page">
-    <div class="text-center"><img src="icons/logo.svg" width="48" height="48" alt="" style="border-radius:50%"></div>
-    <h1>${signup ? "Create your account" : "Sign in to Outreach Tracker"}</h1>
-    <p class="text-center color-fg-muted f5 mb-3">Team 7419</p>
-    <div class="flash f6 mb-3">${icon("info")} ${esc(st.semesterName || "This semester")} requirement: <b>${esc(fmtHours(st.requiredHours || 10))} hours</b> per member.</div>
-    <div class="auth-form">
-      <form id="auth-form" novalidate>
-        ${signup ? `
-        <div class="form-group"><label for="name">Name</label><input class="form-control" id="name" name="name" type="text" autocomplete="name" placeholder="First and last" required></div>
-        <div class="field-row">
-          <div class="form-group"><label for="email">Email</label><input class="form-control" id="email" name="email" type="email" autocomplete="email" inputmode="email" required></div>
-          <div class="form-group"><label for="grade">Grade</label>
-            <select class="form-select width-full" id="grade" name="grade"><option value="">Select</option><option>9</option><option>10</option><option>11</option><option>12</option></select></div>
-        </div>
-        <div class="form-group"><label for="password">Password</label><input class="form-control" id="password" name="password" type="password" autocomplete="new-password" minlength="6" required><span class="note">At least 6 characters.</span></div>
-        ` : `
-        <div class="form-group"><label for="email">Email</label><input class="form-control" id="email" name="email" type="email" autocomplete="email" inputmode="email" required></div>
-        <div class="form-group"><div class="d-flex flex-justify-between flex-items-baseline"><label for="password">Password</label><a href="#" class="f6" data-tab="forgot">Forgot password?</a></div><input class="form-control" id="password" name="password" type="password" autocomplete="current-password" required></div>
-        `}
-        <div class="form-error" id="auth-error"></div>
-        <button class="btn btn-primary btn-block" type="submit">${signup ? "Create account" : "Sign in"}</button>
-      </form>
+  <div class="auth view">
+    <img class="auth__logo" src="icons/logo.svg" alt="">
+    <h1 class="large-title">${signup ? "Create account" : "Outreach Tracker"}</h1>
+    <p class="lead subhead">Team 7419</p>
+    <form id="auth-form" novalidate>
+      <div class="fieldset">
+        ${signup ? `<input class="input" id="name" name="name" type="text" placeholder="Name" aria-label="Name" autocomplete="name" required>` : ""}
+        <input class="input" id="email" name="email" type="email" placeholder="Email" aria-label="Email" autocomplete="email" inputmode="email" required>
+        ${signup ? `<select class="input" id="grade" name="grade" aria-label="Grade"><option value="">Grade</option><option>9</option><option>10</option><option>11</option><option>12</option></select>` : ""}
+        <input class="input" id="password" name="password" type="password" placeholder="${signup ? "Password, 6 or more characters" : "Password"}" aria-label="Password" autocomplete="${signup ? "new-password" : "current-password"}" ${signup ? 'minlength="6"' : ""} required>
+      </div>
+      <p class="form-error" id="auth-error"></p>
+      <button class="btn btn--primary btn--full" type="submit">${signup ? "Create account" : "Sign in"}</button>
+    </form>
+    <div class="aux">
+      ${signup
+        ? `<button type="button" class="link" data-tab="signin">Already have an account? Sign in</button>`
+        : `<button type="button" class="link" data-tab="forgot">Forgot password?</button><button type="button" class="link" data-tab="signup">Create account</button>`}
     </div>
-    <div class="callout">${signup ? `Already have an account? <a href="#" data-tab="signin">Sign in.</a>` : `New here? <a href="#" data-tab="signup">Create an account.</a>`}</div>
-    ${db.mode === "demo" ? `<p class="f6 color-fg-muted text-center mt-3">Demo accounts: alex@example.com, jordan@example.com, sam@example.com. Password: demo.</p>` : ""}
+    <p class="req footnote">${esc(st.semesterName || "This semester")} requirement: ${esc(fmtHours(req))} hours per member.</p>
+    ${db.mode === "demo" ? `<p class="footnote text-3 center mt-2">Demo accounts: alex@example.com, jordan@example.com, sam@example.com. Password: demo.</p>` : ""}
+    <p class="footer-links"><a href="admin.html">Admin</a></p>
   </div>`;
-
-  $$("[data-tab]", app).forEach((a) => a.addEventListener("click", (e) => { e.preventDefault(); state.authTab = a.dataset.tab; renderLanding(); }));
+  $$("[data-tab]", app).forEach((b) => b.addEventListener("click", () => { state.authTab = b.dataset.tab; renderLanding(); }));
   $("#auth-form").addEventListener("submit", onAuthSubmit);
 }
 
 function renderForgot() {
   app.innerHTML = `
-  <div class="auth-page">
-    <div class="text-center"><img src="icons/logo.svg" width="48" height="48" alt="" style="border-radius:50%"></div>
-    <h1>Reset your password</h1>
-    <div class="auth-form">
-      <form id="forgot-form" novalidate>
-        <div class="form-group"><label for="email">Email</label><input class="form-control" id="email" name="email" type="email" autocomplete="email" inputmode="email" required></div>
-        <div class="form-error" id="auth-error"></div>
-        <button class="btn btn-primary btn-block" type="submit">Send password reset email</button>
-      </form>
-    </div>
-    <div class="callout"><a href="#" data-tab="signin">Back to sign in</a></div>
+  <div class="auth view">
+    <img class="auth__logo" src="icons/logo.svg" alt="">
+    <h1 class="large-title">Reset password</h1>
+    <p class="lead subhead">We'll email you a link to set a new one.</p>
+    <form id="forgot-form" novalidate>
+      <div class="fieldset"><input class="input" id="email" name="email" type="email" placeholder="Email" aria-label="Email" autocomplete="email" inputmode="email" required></div>
+      <p class="form-error" id="auth-error"></p>
+      <button class="btn btn--primary btn--full" type="submit">Send reset email</button>
+    </form>
+    <div class="aux"><button type="button" class="link" data-tab="signin">Back to sign in</button></div>
   </div>`;
-  $$("[data-tab]", app).forEach((a) => a.addEventListener("click", (e) => { e.preventDefault(); state.authTab = a.dataset.tab; renderLanding(); }));
+  $$("[data-tab]", app).forEach((b) => b.addEventListener("click", () => { state.authTab = b.dataset.tab; renderLanding(); }));
   $("#forgot-form").addEventListener("submit", async (e) => {
     e.preventDefault();
     const form = e.currentTarget, btn = form.querySelector("button"), err = $("#auth-error"), email = $("#email").value.trim();
@@ -107,28 +98,28 @@ function renderForgot() {
     try {
       const r = await db.sendPasswordReset(email);
       form.innerHTML = r.demo
-        ? `<div class="flash f6 mb-0">${icon("info")} Demo mode: every demo account uses the password <b>demo</b>.</div>`
-        : `<div class="flash flash-success f6 mb-0">${icon("mail")} Check your email for a link to reset your password. If it doesn't appear within a few minutes, check your spam folder.</div>`;
+        ? `<div class="notice notice--muted">Demo mode: every demo account uses the password <b>&nbsp;demo</b>.</div>`
+        : `<div class="notice">Check your email for a link to reset your password. If it doesn't appear within a few minutes, check your spam folder.</div>`;
     } catch (ex) { err.textContent = ex.message; setBusy(btn, false); }
   });
 }
 
 function renderSetPassword() {
   if (stopTimer) { stopTimer(); stopTimer = null; }
-  top.innerHTML = "";
+  navRight.innerHTML = "";
   app.innerHTML = `
-  <div class="auth-page">
-    <div class="text-center"><img src="icons/logo.svg" width="48" height="48" alt="" style="border-radius:50%"></div>
-    <h1>Set a new password</h1>
-    <p class="text-center color-fg-muted f5 mb-3">${esc(state.user?.email || "")}</p>
-    <div class="auth-form">
-      <form id="setpw-form" novalidate>
-        <div class="form-group"><label for="pw1">New password</label><input class="form-control" id="pw1" type="password" autocomplete="new-password" minlength="6" required><span class="note">At least 6 characters.</span></div>
-        <div class="form-group"><label for="pw2">Confirm new password</label><input class="form-control" id="pw2" type="password" autocomplete="new-password" minlength="6" required></div>
-        <div class="form-error" id="auth-error"></div>
-        <button class="btn btn-primary btn-block" type="submit">Set password</button>
-      </form>
-    </div>
+  <div class="auth view">
+    <img class="auth__logo" src="icons/logo.svg" alt="">
+    <h1 class="large-title">New password</h1>
+    <p class="lead subhead">${esc(state.user?.email || "")}</p>
+    <form id="setpw-form" novalidate>
+      <div class="fieldset">
+        <input class="input" id="pw1" type="password" placeholder="New password, 6 or more characters" aria-label="New password" autocomplete="new-password" minlength="6" required>
+        <input class="input" id="pw2" type="password" placeholder="Confirm new password" aria-label="Confirm new password" autocomplete="new-password" minlength="6" required>
+      </div>
+      <p class="form-error" id="auth-error"></p>
+      <button class="btn btn--primary btn--full" type="submit">Set password</button>
+    </form>
   </div>`;
   $("#setpw-form").addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -137,7 +128,7 @@ function renderSetPassword() {
     if (p1.length < 6) { err.textContent = "Password must be at least 6 characters."; return; }
     if (p1 !== p2) { err.textContent = "Passwords don't match."; return; }
     setBusy(btn, true, "Saving");
-    try { await db.updatePassword(p1); db.recoveryPending = false; history.replaceState(null, "", location.pathname + location.search); toast("Password updated.", "gold"); await refresh(); }
+    try { await db.updatePassword(p1); db.recoveryPending = false; history.replaceState(null, "", location.pathname + location.search); toast("Password updated"); await refresh(); }
     catch (ex) { err.textContent = ex.message; setBusy(btn, false); }
   });
 }
@@ -152,202 +143,138 @@ async function onAuthSubmit(e) {
   try {
     if (state.authTab === "signup") {
       const r = await db.signUp(f);
-      if (r.needsConfirm) {
-        setBusy(btn, false);
-        form.innerHTML = `<div class="flash flash-success f6 mb-0">${icon("mail")} Confirmation link sent to <b>${esc(f.email)}</b>. Open it, then sign in.</div>`;
-        return;
-      }
-    } else {
-      await db.signIn(f);
-    }
+      if (r.needsConfirm) { setBusy(btn, false); form.innerHTML = `<div class="notice">Confirmation link sent to <b>&nbsp;${esc(f.email)}</b>. Open it, then sign in.</div>`; return; }
+    } else await db.signIn(f);
     await refresh();
-  } catch (ex) {
-    err.textContent = ex.message;
-    setBusy(btn, false);
-  }
+  } catch (ex) { err.textContent = ex.message; setBusy(btn, false); }
 }
 
 /* ---------------- home ---------------- */
 function renderHome() {
   const { user, settings: st, progress: pr, sessions, open } = state;
-  const req = Number(st.requiredHours) || 10;
-  const approved = pr.approvedHours, pending = pr.pendingHours;
-  const done = approved >= req;
+  const req = Number(st.requiredHours) || 10, approved = pr.approvedHours, pending = pr.pendingHours, done = approved >= req;
   const shop = pr.shopHours || 0, shopPending = pr.shopPendingHours || 0, reqShop = Number(st.requiredShopHours) || 0;
-
-  top.innerHTML = `<span class="f6 hide-sm-inline mr-3" style="color:var(--header-fgColor-default)">${esc(user.name || user.email)}</span><button class="btn btn-sm btn-header" id="signout">${icon("sign-out")}Sign out</button>`;
-  $("#signout").addEventListener("click", async () => { await db.signOut(); state.authTab = "signin"; await refresh(); });
-
   const showInstall = isIOS() && !isStandalone() && !localStorage.getItem("install-tip-dismissed");
+  navRight.innerHTML = "";
 
   app.innerHTML = `
-  <div class="d-flex flex-items-center flex-justify-between mb-3" style="gap:12px">
-    <div><h1 class="f3 text-semibold lh-condensed mb-0">Outreach Tracker</h1><div class="page-sub">${esc(st.semesterName)}, ${esc(fmtHours(req))} hours required</div></div>
-    ${user.excused ? `<span class="State State--draft">Excused</span>` : done ? `<span class="State State--success">${icon("check")} Requirement met</span>` : ""}
-  </div>
+  <div class="view">
+    <header class="page-head">
+      <h1 class="large-title">Outreach Tracker</h1>
+      <p class="subtitle">${esc(st.semesterName)}, ${esc(fmtHours(req))} hours required</p>
+    </header>
 
-  <div class="Box">
-    <div class="Box-header d-flex"><h2 class="Box-title flex-auto">Outreach</h2></div>
-    <div class="Box-body">
-      <div class="big-number">${esc(fmtHours(approved))}<small>/ ${esc(fmtHours(req))} hours approved</small></div>
-      <div class="mt-2">${progressBar({ approved, pending, required: req, excused: user.excused })}</div>
-      ${user.excused && user.excusedNote ? `<p class="f6 color-fg-muted mt-2 mb-0">${esc(user.excusedNote)}</p>` : ""}
-    </div>
-  </div>
-
-  ${db.shopReady ? `<div class="Box">
-    <div class="Box-header d-flex"><h2 class="Box-title flex-auto">Shop</h2></div>
-    <div class="Box-body">
-      <div class="big-number">${esc(fmtHours(shop))}<small>${reqShop > 0 ? `/ ${esc(fmtHours(reqShop))} hours` : "hours this semester"}</small></div>
-      ${reqShop > 0 ? `<div class="mt-2">${progressBar({ approved: shop, pending: shopPending, required: reqShop, excused: user.excused })}</div>` : roundQuarter(shopPending) ? `<div class="f6 color-fg-muted mt-1">${esc(fmtHours(roundQuarter(shopPending)))} h waiting for review</div>` : ""}
-    </div>
-  </div>` : ""}
-
-  <div class="Box" id="status-card">
-    <div class="Box-header"><h2 class="Box-title">Status</h2></div>
-    <div class="Box-body">
+    <section class="card" id="status-card">
       ${open ? `
-        <div class="d-flex flex-items-center flex-wrap" style="gap:12px 16px">
-          <div class="flex-auto">
-            <span class="State State--open"><span class="dot"></span>Clocked in</span> ${categoryTag(open.category)}
-            <div class="elapsed mt-2" id="elapsed">${esc(fmtDuration(Date.now() - new Date(open.clockInAt).getTime()))}</div>
-            <div class="f6 color-fg-muted">Since ${esc(fmtTime(open.clockInAt))}${open.event ? ` · ${esc(open.event)}` : ""}</div>
-          </div>
-          <button class="btn btn-primary btn-large" id="clock-out">${icon("stopwatch")}Clock out</button>
-        </div>
-        <p class="f6 color-fg-muted mt-3 mb-0">If you forget to clock out, an admin can close the session. The time stops when they do.</p>
+        <div class="card__head"><span class="status status--open">Clocked in</span>${chip(open.category)}</div>
+        <div class="number" id="elapsed">${esc(fmtDuration(Date.now() - new Date(open.clockInAt).getTime()))}</div>
+        <p class="footnote text-2 mt-1">Since ${esc(fmtTime(open.clockInAt))}${open.event ? `, ${esc(open.event)}` : ""}</p>
+        <button class="btn btn--primary btn--full mt-3" id="clock-out" type="button">Clock out</button>
+        <p class="footnote text-3 mt-2">If you forget to clock out, an admin can close the session. The time stops when they do.</p>
       ` : `
-        <div class="d-flex flex-items-center flex-wrap" style="gap:12px 16px">
-          <div class="flex-auto">
-            <span class="State State--draft">Not clocked in</span>
-            <p class="mono-note mt-2 mb-0">Photos must include the object specified by an admin for the event.${specificObject(st) ? ` Current: <b>${esc(specificObject(st))}</b>.` : ""}</p>
-          </div>
-          <button class="btn btn-primary btn-large" id="clock-in">${icon("device-camera")}Clock in</button>
-        </div>
+        <h2 class="card__title">Not clocked in</h2>
+        <p class="mono-note mt-1">${objectLine(st)}</p>
+        <button class="btn btn--primary btn--full mt-3" id="clock-in" type="button">Clock in</button>
       `}
-    </div>
-  </div>
+    </section>
 
-  ${showInstall ? `
-  <div class="flash d-flex flex-items-center mt-3" id="install-tip" style="gap:8px">${icon("share-android")}<span class="flex-auto f6"><b>Add to home screen:</b> in Safari tap Share, then <b>Add to Home Screen</b>.</span><button type="button" class="close-button" aria-label="Dismiss">${icon("x")}</button></div>` : ""}
+    ${showInstall ? `<div class="notice mt-3" id="install-tip"><span><b>Add to Home Screen</b>: in Safari tap Share, then Add to Home Screen.</span><button type="button" class="x" aria-label="Dismiss">&#x2715;</button></div>` : ""}
 
-  <div class="Box">
-    <div class="Box-header d-flex"><h2 class="Box-title flex-auto">Sessions</h2><span class="Counter">${sessions.length}</span></div>
-    <div id="sessions">
-      ${sessions.length ? sessions.map(sessionRow).join("") : `<div class="blankslate">${icon("clock", 24)}<h3 class="blankslate-heading">No sessions yet</h3></div>`}
-    </div>
-  </div>
+    <section class="card mt-3">
+      <div class="card__head"><h2 class="card__title">Outreach</h2>${user.excused ? `<span class="status status--neutral">Excused</span>` : done ? `<span class="status status--approved">Requirement met</span>` : ""}</div>
+      <div class="number">${esc(fmtHours(approved))}<span class="unit">/ ${esc(fmtHours(req))} h approved</span></div>
+      <div class="mt-2">${progressBar({ approved, pending, required: req, excused: user.excused })}</div>
+      ${user.excused && user.excusedNote ? `<p class="footnote text-2 mt-1">${esc(user.excusedNote)}</p>` : ""}
+    </section>
 
-  <div class="Box">
-    <div class="Box-header"><h2 class="Box-title">Account</h2></div>
-    <div class="Box-row d-flex flex-items-center">
-      <span class="initials">${esc((user.name || user.email).split(/\s+/).map((w) => w[0]).join("").slice(0, 2).toUpperCase())}</span>
-      <div class="flex-auto"><div class="text-semibold">${esc(user.name || "No name")}</div><div class="f6 color-fg-muted">${esc(user.email)}</div></div>
+    ${db.shopReady ? `
+    <section class="card">
+      <div class="card__head"><h2 class="card__title">Shop</h2></div>
+      <div class="number">${esc(fmtHours(shop))}<span class="unit">${reqShop > 0 ? `/ ${esc(fmtHours(reqShop))} h` : "h this semester"}</span></div>
+      ${reqShop > 0 ? `<div class="mt-2">${progressBar({ approved: shop, pending: shopPending, required: reqShop, excused: user.excused })}</div>` : roundQuarter(shopPending) ? `<p class="footnote text-2 mt-1">${esc(fmtHours(roundQuarter(shopPending)))} h waiting for review</p>` : ""}
+    </section>` : ""}
+
+    <h2 class="section-title">Sessions<small>${sessions.length} this semester</small></h2>
+    <div class="group" id="sessions">${sessions.length ? sessions.map(sessionRow).join("") : `<p class="empty">No sessions yet</p>`}</div>
+
+    <h2 class="section-title">Account</h2>
+    <div class="group">
+      <div class="row">
+        <span class="avatar">${esc(initials(user.name || user.email))}</span>
+        <div class="row__main"><div class="row__title">${esc(user.name || "No name")}</div><div class="row__sub">${esc(user.email)}</div></div>
+        <button type="button" class="btn btn--small btn--tinted" id="signout">Sign out</button>
+      </div>
     </div>
+    <p class="footer-links"><a href="admin.html">Admin</a></p>
   </div>`;
 
-  if (open) {
-    if (stopTimer) stopTimer();
-    stopTimer = liveTimer($("#elapsed"), open.clockInAt);
-    $("#clock-out").addEventListener("click", () => openClockSheet("out"));
-  } else {
-    if (stopTimer) { stopTimer(); stopTimer = null; }
-    $("#clock-in").addEventListener("click", () => openClockSheet("in"));
-  }
+  $("#signout").addEventListener("click", async () => { await db.signOut(); state.authTab = "signin"; await refresh(); });
+  if (open) { if (stopTimer) stopTimer(); stopTimer = liveTimer($("#elapsed"), open.clockInAt); $("#clock-out").addEventListener("click", () => openClockSheet("out")); }
+  else { if (stopTimer) { stopTimer(); stopTimer = null; } $("#clock-in").addEventListener("click", () => openClockSheet("in")); }
   const tip = $("#install-tip");
-  if (tip) tip.querySelector(".close-button").addEventListener("click", () => { localStorage.setItem("install-tip-dismissed", "1"); tip.remove(); });
-
+  if (tip) tip.querySelector(".x").addEventListener("click", () => { localStorage.setItem("install-tip-dismissed", "1"); tip.remove(); });
   hydratePhotos(app);
 }
 
 function sessionRow(s) {
   if (s.manual) {
     return `
-  <div class="Box-row session-row" data-id="${esc(s.id)}">
-    <div class="main">
-      <div class="d-flex flex-items-center flex-wrap" style="gap:4px 8px"><span class="text-semibold">${esc(s.event || "Hours added by an admin")}</span>${categoryTag(s.category)}${statusTag("approved")}</div>
-      <div class="f6 color-fg-muted mt-1">${esc(fmtDay(s.clockInAt))}, added by an admin</div>
-      ${s.adminNote ? `<div class="flash f6 mt-2 py-2">${icon("info")} ${esc(s.adminNote)}</div>` : ""}
-    </div>
-    <div class="hours"><b>${esc(fmtHours(s.approvedHours))}</b><small>hrs</small></div>
-  </div>`;
+    <div class="srow" data-id="${esc(s.id)}">
+      <div class="srow__top">
+        <div class="row__main"><div class="row__title">${esc(s.event || "Hours added by an admin")} ${chip(s.category)}</div><div class="row__sub">${esc(fmtDay(s.clockInAt))}, added by an admin</div></div>
+        <div class="row__trail"><b>${esc(fmtHours(s.approvedHours))}</b>hours</div>
+      </div>
+      <div class="srow__meta">${statusText("approved")}</div>
+      ${s.adminNote ? `<p class="footnote text-2 mt-1">${esc(s.adminNote)}</p>` : ""}
+    </div>`;
   }
-  let hours, hint = "hrs";
+  let hours, hint = "hours";
   if (s.status === "approved") hours = fmtHours(s.approvedHours);
-  else if (s.status === "pending") { hours = fmtHours(suggestHours(s)); hint = "hrs on the clock"; }
+  else if (s.status === "pending") { hours = fmtHours(suggestHours(s)); hint = "on the clock"; }
   else if (s.status === "open") { hours = fmtDuration(Date.now() - new Date(s.clockInAt).getTime()); hint = "so far"; }
   else hours = "0";
   const range = s.clockOutAt ? `${fmtTime(s.clockInAt)} – ${fmtTime(s.clockOutAt)}` : `from ${fmtTime(s.clockInAt)}`;
   return `
-  <div class="Box-row session-row" data-id="${esc(s.id)}">
-    <div class="main">
-      <div class="d-flex flex-items-center flex-wrap" style="gap:4px 8px"><span class="text-semibold">${esc(s.event || (s.category === "shop" ? "Shop" : "Outreach"))}</span>${categoryTag(s.category)}${statusTag(s.status)}</div>
-      <div class="f6 color-fg-muted mt-1">${esc(fmtDay(s.clockInAt))} · ${esc(range)}</div>
-      <div class="photos">
-        ${photoCell(s.clockInPhoto, "Clock in", s.clockInAt, s)}
-        ${photoCell(s.clockOutPhoto, "Clock out", s.clockOutAt, s)}
-      </div>
-      ${s.adminNote ? `<div class="flash ${s.status === "rejected" ? "flash-error" : ""} f6 mt-2 py-2">${icon("info")} ${esc(s.adminNote)}</div>` : ""}
+  <div class="srow" data-id="${esc(s.id)}">
+    <div class="srow__top">
+      <div class="row__main"><div class="row__title">${esc(s.event || (s.category === "shop" ? "Shop" : "Outreach"))} ${chip(s.category)}</div><div class="row__sub">${esc(fmtDay(s.clockInAt))}, ${esc(range)}</div></div>
+      <div class="row__trail"><b>${esc(hours)}</b>${esc(hint)}</div>
     </div>
-    <div class="hours"><b>${esc(hours)}</b><small>${esc(hint)}</small></div>
+    <div class="srow__meta">${statusText(s.status)}</div>
+    <div class="photos">${photoCell(s.clockInPhoto, "Clock in", s.clockInAt, s)}${photoCell(s.clockOutPhoto, "Clock out", s.clockOutAt, s)}</div>
+    ${s.adminNote ? `<div class="notice ${s.status === "rejected" ? "notice--error" : "notice--muted"} footnote mt-2">${esc(s.adminNote)}</div>` : ""}
   </div>`;
 }
 
-/* ---------------- clock in / out dialog ---------------- */
+/* ---------------- clock in / out ---------------- */
+const captureHtml = () => `<label class="capture" for="photo-input">${CAMERA}<strong>Take photo</strong><input id="photo-input" type="file" accept="image/*" capture="environment"></label>`;
+
 function openClockSheet(kind) {
   const st = state.settings, open = state.open, user = state.user;
   const events = [...new Set(state.sessions.map((s) => s.event).filter(Boolean))].slice(0, 8);
   let photo = null, tick;
   let category = db.shopReady && localStorage.getItem("last-category") === "shop" ? "shop" : "outreach";
+  const placeholderFor = (c) => (c === "shop" ? "example: build session" : "example: FTC Meet 9/20");
 
   const el = sheet.open(`
-    <div class="Overlay-header Overlay-header--divided">
-      <div class="Overlay-headerContentWrap">
-        <div class="Overlay-titleWrap">
-          <h1 class="Overlay-title">${kind === "in" ? "Clock in" : "Clock out"}</h1>
-          <p class="Overlay-description">Current time <b id="now-time">${esc(fmtTime(new Date()))}</b>.${kind === "out" ? ` Clocked in at ${esc(fmtTime(open.clockInAt))}.` : ""}</p>
-        </div>
-        <div class="Overlay-actionWrap"><button type="button" class="close-button Overlay-closeButton" aria-label="Close">${icon("x")}</button></div>
-      </div>
+    ${sheetHead(kind === "in" ? "Clock in" : "Clock out", `Current time <b id="now-time">${esc(fmtTime(new Date()))}</b>${kind === "out" ? `. Clocked in at ${esc(fmtTime(open.clockInAt))}` : ""}`)}
+    <div class="sheet__body">
+      ${kind === "in" && db.shopReady ? `<div class="field"><span class="field__label">Type</span><div id="cat-seg"></div></div>` : ""}
+      ${kind === "in" ? `<label class="field"><span class="field__label">Event</span><input class="input" id="event" type="text" list="event-list" placeholder="${placeholderFor(category)}" autocomplete="off" maxlength="80"><datalist id="event-list">${events.map((e) => `<option value="${esc(e)}">`).join("")}</datalist></label>` : ""}
+      <p class="mono-note mb-2">${objectLine(st)}</p>
+      <div id="capture-wrap">${captureHtml()}</div>
+      ${kind === "out" ? `<label class="field mt-3"><span class="field__label">Note for the admin <span class="opt">(optional)</span></span><textarea class="input" id="note" rows="2" maxlength="300"></textarea></label>` : ""}
+      <p class="form-error mt-2" id="clock-error"></p>
     </div>
-    <div class="Overlay-body">
-      ${kind === "in" ? `
-      ${db.shopReady ? `<div class="form-group">
-        <label>Type</label>
-        <div class="BtnGroup" role="group" id="cat-group">
-          <button type="button" class="btn BtnGroup-item ${category === "outreach" ? "selected" : ""}" aria-pressed="${category === "outreach"}" data-cat="outreach">Outreach</button>
-          <button type="button" class="btn BtnGroup-item ${category === "shop" ? "selected" : ""}" aria-pressed="${category === "shop"}" data-cat="shop">Shop</button>
-        </div>
-      </div>` : ""}
-      <div class="form-group">
-        <label for="event">Event</label>
-        <input class="form-control width-full" id="event" type="text" list="event-list" placeholder="${category === "shop" ? "example: build session" : "example: FTC Meet 9/20"}" autocomplete="off" maxlength="80">
-        <datalist id="event-list">${events.map((e) => `<option value="${esc(e)}">`).join("")}</datalist>
-      </div>` : ""}
-      <div class="flash flash-warn f6 mb-3">${icon("alert")} Required in the photo: ${specificObject(st) ? `<b>${esc(specificObject(st))}</b> (specified by an admin for this event)` : "the object specified by an admin for this event"}.</div>
-      <div id="capture-wrap">
-        <label class="capture d-block" for="photo-input">${icon("device-camera", 24)}<div class="text-semibold">Take photo</div><input id="photo-input" type="file" accept="image/*" capture="environment"></label>
-      </div>
-      ${kind === "out" ? `<div class="form-group mt-3"><label for="note">Note for the admin <span class="text-normal color-fg-muted">(optional)</span></label><textarea class="form-control width-full" id="note" rows="2" maxlength="300"></textarea></div>` : ""}
-      <div class="form-error mt-2" id="clock-error"></div>
-    </div>
-    <div class="Overlay-footer Overlay-footer--alignEnd">
-      <button class="btn" id="cancel" type="button">Cancel</button>
-      <button class="btn btn-primary" id="confirm" type="button" disabled>${kind === "in" ? "Clock in" : "Clock out"}</button>
-    </div>
+    <div class="sheet__actions"><button class="btn btn--primary btn--full" id="confirm" type="button" disabled>${kind === "in" ? "Clock in" : "Clock out"}</button></div>
   `, { onClose: () => clearInterval(tick) });
 
+  if (kind === "in" && db.shopReady) {
+    segmented($("#cat-seg", el), { items: [{ value: "outreach", label: "Outreach" }, { value: "shop", label: "Shop" }], value: category, onChange: (v) => { category = v; const ev = $("#event", el); if (ev) ev.placeholder = placeholderFor(v); } });
+  }
   tick = setInterval(() => { const n = $("#now-time", el); if (n) n.textContent = fmtTime(new Date()); }, 1000);
-  $("#cancel", el).addEventListener("click", () => sheet.close());
-  $$("#cat-group button", el).forEach((b) => b.addEventListener("click", () => {
-    category = b.dataset.cat;
-    $$("#cat-group button", el).forEach((x) => { x.classList.toggle("selected", x === b); x.setAttribute("aria-pressed", String(x === b)); });
-    const ev = $("#event", el); if (ev) ev.placeholder = category === "shop" ? "example: build session" : "example: FTC Meet 9/20";
-    $("#confirm", el).textContent = "Clock in";
-  }));
 
   const wrap = $("#capture-wrap", el), confirm = $("#confirm", el), err = $("#clock-error", el);
-  const emptyCapture = `<label class="capture d-block" for="photo-input">${icon("device-camera", 24)}<div class="text-semibold">Take photo</div><input id="photo-input" type="file" accept="image/*" capture="environment"></label>`;
   const bindInput = () => {
     const input = $("#photo-input", wrap);
     if (!input) return;
@@ -357,14 +284,10 @@ function openClockSheet(kind) {
       err.textContent = "";
       try {
         photo = await preparePhoto(file, { name: user.name || user.email, kind });
-        wrap.innerHTML = `<div class="capture has-photo"><img src="${photo.url}" alt="Your photo"><button type="button" class="btn btn-sm retake">${icon("sync")}Retake</button></div>`;
+        wrap.innerHTML = `<div class="capture capture--has"><img src="${photo.url}" alt="Your photo"><button type="button" class="btn btn--small retake">Retake</button></div>`;
         confirm.disabled = false;
-        $(".retake", wrap).addEventListener("click", () => { photo = null; confirm.disabled = true; wrap.innerHTML = emptyCapture; bindInput(); });
-      } catch (ex) {
-        err.textContent = ex.message;
-        wrap.innerHTML = emptyCapture;
-        bindInput();
-      }
+        $(".retake", wrap).addEventListener("click", () => { photo = null; confirm.disabled = true; wrap.innerHTML = captureHtml(); bindInput(); });
+      } catch (ex) { err.textContent = ex.message; wrap.innerHTML = captureHtml(); bindInput(); }
     })();
   };
   bindInput();
@@ -377,11 +300,8 @@ function openClockSheet(kind) {
       else await db.clockOut({ sessionId: open.id, photoBlob: photo.blob, note: $("#note", el).value });
       sheet.close();
       const autoApproved = kind === "out" && open.category === "shop" && !state.settings.shopRequiresReview;
-      toast(kind === "in" ? `Clocked in at ${fmtTime(new Date())}.` : autoApproved ? `Clocked out at ${fmtTime(new Date())}. Shop hours recorded.` : `Clocked out at ${fmtTime(new Date())}. Waiting for review.`, "gold");
+      toast(kind === "in" ? `Clocked in at ${fmtTime(new Date())}` : autoApproved ? `Clocked out at ${fmtTime(new Date())}, shop hours recorded` : `Clocked out at ${fmtTime(new Date())}, waiting for review`);
       await refresh();
-    } catch (ex) {
-      err.textContent = ex.message;
-      setBusy(confirm, false);
-    }
+    } catch (ex) { err.textContent = ex.message; setBusy(confirm, false); }
   });
 }

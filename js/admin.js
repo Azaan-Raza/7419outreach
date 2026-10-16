@@ -1,15 +1,14 @@
-// Lead (admin) app: separate sign-in, review queue with both photos, live clock-ins, roster with progress, settings.
+// Admin app: review queue with both photos, who is clocked in now, the roster, and settings.
 
 import { db, ready, suggestHours } from "./db.js";
-import { $, $$, esc, fmtDay, fmtDate, fmtTime, fmtHours, fmtDuration, hoursBetween, roundQuarter, progressBar, statusTag, categoryTag, toast, sheet, liveTimer, setBusy, csvDownload, initials } from "./ui.js";
+import { $, $$, esc, fmtDay, fmtDate, fmtTime, fmtHours, fmtDuration, hoursBetween, roundQuarter, progressBar, statusText, chip, segmented, toast, sheet, sheetHead, liveTimer, setBusy, csvDownload, initials, plural, SEARCH } from "./ui.js";
 import { photoCell, hydratePhotos } from "./photos-ui.js";
-import { icon } from "./icons.js";
 
-const app = $("#app"), top = $("#topbar-right");
+const app = $("#app"), navRight = $("#nav-right");
 const state = { admin: null, settings: null, sessions: [], members: [], tab: "review", filter: "pending", cat: "all", search: "", sort: "name", editing: new Set(), timers: [], loading: false };
 
 (async function boot() {
-  try { await ready; } catch (e) { app.innerHTML = `<div class="blankslate">${icon("alert", 24)}<h3 class="blankslate-heading">Couldn't start</h3><p>${esc(e.message)}</p></div>`; return; }
+  try { await ready; } catch (e) { app.innerHTML = `<div class="card"><p class="empty">Couldn't start: ${esc(e.message)}</p></div>`; return; }
   if (db.mode === "demo") $("#demo-banner").classList.remove("hidden");
   db.onAuthChange(() => refresh());
   await refresh();
@@ -17,7 +16,6 @@ const state = { admin: null, settings: null, sessions: [], members: [], tab: "re
 })();
 
 function stopTimers() { state.timers.forEach((s) => s()); state.timers = []; }
-
 async function refresh() {
   if (state.loading) return;
   state.loading = true;
@@ -25,36 +23,32 @@ async function refresh() {
     state.admin = await db.getAdmin();
     state.settings = await db.getSettings();
     if (state.admin) { await loadData(); renderDash(); } else renderSignIn();
-  } catch (e) { toast(e.message, "error"); if (!state.admin) renderSignIn(); }
+  } catch (e) { toast(e.message); if (!state.admin) renderSignIn(); }
   finally { state.loading = false; }
 }
-async function loadData() {
-  [state.sessions, state.members] = await Promise.all([db.listSessions(), db.listMembers()]);
-}
+async function loadData() { [state.sessions, state.members] = await Promise.all([db.listSessions(), db.listMembers()]); }
+const req = () => Number(state.settings?.requiredHours) || 10;
 
 /* ---------------- sign in ---------------- */
 function renderSignIn() {
   stopTimers();
-  top.innerHTML = `<a class="btn btn-sm btn-header" href="./">Member app</a>`;
+  navRight.innerHTML = `<a class="nav__link" href="./">Member app</a>`;
   const demo = db.mode === "demo";
   app.innerHTML = `
-  <div class="auth-page">
-    <div class="text-center"><img src="icons/logo.svg" width="48" height="48" alt="" style="border-radius:50%"></div>
-    <h1>Admin sign-in</h1>
-    <p class="text-center color-fg-muted f5 mb-3">Approve hours, see who is clocked in, and manage the roster.</p>
-    <div class="auth-form">
-      <form id="admin-form" novalidate>
-        ${demo ? `
-        <div class="form-group"><label for="passcode">Admin passcode</label><input class="form-control" id="passcode" name="passcode" type="password" inputmode="numeric" autocomplete="off" required></div>
-        ` : `
-        <div class="form-group"><label for="email">Email</label><input class="form-control" id="email" name="email" type="email" autocomplete="email" required></div>
-        <div class="form-group"><label for="password">Password</label><input class="form-control" id="password" name="password" type="password" autocomplete="current-password" required></div>
-        `}
-        <div class="form-error" id="admin-error"></div>
-        <button class="btn btn-primary btn-block" type="submit">Sign in</button>
-      </form>
-    </div>
-    <div class="callout">Member accounts can't sign in here. ${demo ? "The demo passcode is in config.js." : "Need admin access? Ask a current admin."}<br><a href="./">Go to the member app.</a></div>
+  <div class="auth view">
+    <img class="auth__logo" src="icons/logo.svg" alt="">
+    <h1 class="large-title">Admin</h1>
+    <p class="lead subhead">Team 7419</p>
+    <form id="admin-form" novalidate>
+      <div class="fieldset">
+        ${demo ? `<input class="input" id="passcode" name="passcode" type="password" placeholder="Admin passcode" aria-label="Admin passcode" inputmode="numeric" autocomplete="off" required>`
+               : `<input class="input" id="email" name="email" type="email" placeholder="Email" aria-label="Email" autocomplete="email" required><input class="input" id="password" name="password" type="password" placeholder="Password" aria-label="Password" autocomplete="current-password" required>`}
+      </div>
+      <p class="form-error" id="admin-error"></p>
+      <button class="btn btn--primary btn--full" type="submit">Sign in</button>
+    </form>
+    <p class="req footnote">Member accounts can't sign in here.${demo ? " The demo passcode is in config.js." : ""}</p>
+    <p class="footer-links"><a href="./">Member app</a></p>
   </div>`;
   $("#admin-form").addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -70,275 +64,250 @@ function renderSignIn() {
 /* ---------------- dashboard ---------------- */
 function renderDash() {
   stopTimers();
-  const { settings: st, sessions, members, admin } = state;
-  const req = Number(st.requiredHours) || 10;
-  const pending = sessions.filter((s) => s.status === "pending");
-  const open = sessions.filter((s) => s.status === "open");
-  const active = members.filter((m) => !m.excused);
-  const done = active.filter((m) => m.approvedHours >= req).length;
-  const totalApproved = members.reduce((a, m) => a + m.approvedHours, 0);
-  const totalShop = members.reduce((a, m) => a + (m.shopHours || 0), 0);
+  const { settings: st, sessions, members } = state;
+  const pending = sessions.filter((s) => s.status === "pending"), open = sessions.filter((s) => s.status === "open");
+  const active = members.filter((m) => !m.excused), done = active.filter((m) => m.approvedHours >= req()).length;
+  const totalApproved = members.reduce((a, m) => a + m.approvedHours, 0), totalShop = members.reduce((a, m) => a + (m.shopHours || 0), 0);
 
-  top.innerHTML = `<span class="f6 hide-sm-inline mr-3" style="color:var(--header-fgColor-default)">${esc(admin.name || admin.email)}</span><button class="btn btn-sm btn-header" id="signout">${icon("sign-out")}Sign out</button>`;
+  navRight.innerHTML = `<button type="button" class="nav__link" id="signout">Sign out</button>`;
   $("#signout").addEventListener("click", async () => { await db.adminSignOut(); await refresh(); });
 
-  const tabs = [["review", "Review", "checklist", pending.length], ["live", "Live", "pulse", open.length], ["members", "Members", "people", 0], ["settings", "Settings", "gear", 0]];
   app.innerHTML = `
-  <div class="mb-3">
-    <h1 class="f3 text-semibold lh-condensed mb-0">${pending.length ? `${pending.length} session${pending.length === 1 ? "" : "s"} waiting for review` : "No sessions waiting for review"}</h1>
-    <div class="page-sub">${esc(st.semesterName)}, ${esc(fmtHours(req))} hours required</div>
-  </div>
-  ${!db.shopReady ? `<div class="flash flash-warn mb-3 f6">${icon("alert")} <b>Shop hours need a database update.</b> In Supabase: SQL editor → paste <code>supabase/schema.sql</code> → Run. Safe to run on the live data. Shop options stay hidden until then.</div>` : ""}
-  <div class="stats mb-3">
-    <div class="Box p-3 stat"><div class="l">Waiting for review</div><div class="n">${pending.length}</div></div>
-    <div class="Box p-3 stat"><div class="l">Clocked in now</div><div class="n">${open.length}</div></div>
-    <div class="Box p-3 stat"><div class="l">Members done</div><div class="n">${done}<span class="color-fg-muted f4"> / ${active.length}</span></div></div>
-    <div class="Box p-3 stat"><div class="l">Outreach hours approved</div><div class="n">${esc(fmtHours(totalApproved))}</div></div>
-    ${db.shopReady ? `<div class="Box p-3 stat"><div class="l">Shop hours</div><div class="n">${esc(fmtHours(totalShop))}</div></div>` : ""}
-  </div>
-  <nav class="UnderlineNav mb-3" aria-label="Sections">
-    <div class="UnderlineNav-body" role="tablist">
-      ${tabs.map(([k, l, ic, n]) => `<button type="button" class="UnderlineNav-item" role="tab" aria-selected="${state.tab === k}" data-tab="${k}"><span class="UnderlineNav-octicon">${icon(ic)}</span> ${l}${n ? `<span class="Counter">${n}</span>` : ""}</button>`).join("")}
-    </div>
-  </nav>
-  <div id="panel"></div>`;
-  $$(".UnderlineNav-item").forEach((b) => b.addEventListener("click", () => { state.tab = b.dataset.tab; renderDash(); }));
+  <div class="view">
+    <header class="page-head">
+      <h1 class="large-title">Admin</h1>
+      <p class="subtitle">${esc(st.semesterName)}, ${esc(fmtHours(req()))} hours required</p>
+    </header>
+    ${!db.shopReady ? `<div class="notice mb-3"><span><b>Shop hours need a database update.</b> In Supabase: SQL editor → paste <code>supabase/schema.sql</code> → Run. Shop options stay hidden until then.</span></div>` : ""}
+    <section class="card">
+      <p class="title2">${pending.length ? `${plural(pending.length, "session")} waiting for review` : "Nothing waiting for review"}</p>
+      <div class="stats">
+        <div><b>${open.length}</b><span>clocked in now</span></div>
+        <div><b>${done}<span class="text-3"> / ${active.length}</span></b><span>members done</span></div>
+        <div><b>${esc(fmtHours(totalApproved))}</b><span>outreach hours</span></div>
+        ${db.shopReady ? `<div><b>${esc(fmtHours(totalShop))}</b><span>shop hours</span></div>` : ""}
+      </div>
+    </section>
+    <div class="mt-3" id="tabs"></div>
+    <div class="mt-3" id="panel"></div>
+    <p class="footer-links"><a href="./">Member app</a></p>
+  </div>`;
+  segmented($("#tabs"), {
+    items: [{ value: "review", label: pending.length ? `Review ${pending.length}` : "Review" }, { value: "live", label: open.length ? `Live ${open.length}` : "Live" }, { value: "members", label: "Members" }, { value: "settings", label: "Settings" }],
+    value: state.tab, onChange: (v) => { state.tab = v; renderPanel(); },
+  });
   renderPanel();
 }
-
 function renderPanel() {
   stopTimers();
-  const panel = $("#panel");
-  ({ review: renderReview, live: renderLive, members: renderMembers, settings: renderSettings })[state.tab](panel);
+  ({ review: renderReview, live: renderLive, members: renderMembers, settings: renderSettings })[state.tab]($("#panel"));
 }
 
 /* ---------------- review ---------------- */
 function renderReview(panel) {
-  const filters = [["pending", "Waiting"], ["approved", "Approved"], ["rejected", "Sent back"], ["all", "All"]];
-  const cats = [["all", "All"], ["outreach", "Outreach"], ["shop", "Shop"]];
   const list = state.sessions.filter((s) => s.status !== "open" && (state.filter === "all" || s.status === state.filter) && (state.cat === "all" || (s.category || "outreach") === state.cat));
   panel.innerHTML = `
-    <div class="toolbar mb-3">
-      <div class="BtnGroup">${filters.map(([k, l]) => `<button type="button" class="btn btn-sm BtnGroup-item ${state.filter === k ? "selected" : ""}" aria-pressed="${state.filter === k}" data-f="${k}">${l}</button>`).join("")}</div>
-      ${db.shopReady ? `<div class="BtnGroup">${cats.map(([k, l]) => `<button type="button" class="btn btn-sm BtnGroup-item ${state.cat === k ? "selected" : ""}" aria-pressed="${state.cat === k}" data-c="${k}">${l}</button>`).join("")}</div>` : ""}
-      <span class="f6 color-fg-muted">${list.length} session${list.length === 1 ? "" : "s"}</span>
-    </div>
-    <div id="review-list">
-      ${list.length ? list.map((s) => reviewCard(s)).join("") : `<div class="Box"><div class="blankslate">${icon("checklist", 24)}<h3 class="blankslate-heading">${state.filter === "pending" ? "No sessions waiting for review" : "No sessions"}</h3></div></div>`}
-    </div>`;
-  $$(".BtnGroup-item[data-f]", panel).forEach((b) => b.addEventListener("click", () => { state.filter = b.dataset.f; renderPanel(); }));
-  $$(".BtnGroup-item[data-c]", panel).forEach((b) => b.addEventListener("click", () => { state.cat = b.dataset.c; renderPanel(); }));
+    <div class="toolbar"><div id="f-status"></div>${db.shopReady ? `<div id="f-cat"></div>` : ""}</div>
+    <div id="review-list">${list.length ? list.map(reviewCard).join("") : `<div class="card"><p class="empty">${state.filter === "pending" ? "Nothing waiting for review" : "No sessions"}</p></div>`}</div>`;
+  segmented($("#f-status", panel), { small: true, value: state.filter, onChange: (v) => { state.filter = v; renderPanel(); }, items: [{ value: "pending", label: "Waiting" }, { value: "approved", label: "Approved" }, { value: "rejected", label: "Sent back" }, { value: "all", label: "All" }] });
+  if (db.shopReady) segmented($("#f-cat", panel), { small: true, value: state.cat, onChange: (v) => { state.cat = v; renderPanel(); }, items: [{ value: "all", label: "All" }, { value: "outreach", label: "Outreach" }, { value: "shop", label: "Shop" }] });
   bindReviewCards(panel);
   hydratePhotos(panel);
 }
 
 function reviewCard(s) {
-  const editing = state.editing.has(s.id);
-  const dur = hoursBetween(s.clockInAt, s.clockOutAt);
-  const deciding = s.status === "pending" || editing;
-  const first = (s.userName || "member").split(" ")[0];
+  const editing = state.editing.has(s.id), deciding = s.status === "pending" || editing;
+  const dur = hoursBetween(s.clockInAt, s.clockOutAt), first = (s.userName || "member").split(" ")[0];
   return `
-  <div class="Box review mb-3" data-id="${esc(s.id)}">
-    <div class="Box-header d-flex">
-      <span class="initials">${esc(initials(s.userName || s.userEmail))}</span>
-      <div class="flex-auto"><div class="text-semibold">${esc(s.userName || s.userEmail)}</div><div class="f6 color-fg-muted">${s.userGrade ? `Grade ${esc(s.userGrade)} · ` : ""}${esc(s.userEmail)}</div></div>
-      ${categoryTag(s.category)} ${statusTag(s.status)}
+  <article class="card review mb-3" data-id="${esc(s.id)}">
+    <div class="review__who">
+      <span class="avatar">${esc(initials(s.userName || s.userEmail))}</span>
+      <div class="row__main"><div class="row__title">${esc(s.userName || s.userEmail)}</div><div class="row__sub">${s.userGrade ? `Grade ${esc(s.userGrade)}, ` : ""}${esc(s.userEmail)}</div></div>
+      <div>${statusText(s.status)}</div>
     </div>
-    <div class="Box-body">
-      <div><b>${esc(s.event || (s.manual ? "Hours added by an admin" : s.category === "shop" ? "Shop" : "Outreach"))}</b> <span class="color-fg-muted">· ${esc(fmtDate(s.clockInAt))}</span></div>
-      ${s.manual ? `<div class="f6 color-fg-muted mt-1">Added by an admin, no photos</div>` : `<div class="photos">
-        ${photoCell(s.clockInPhoto, "Clock in", s.clockInAt, s)}
-        ${photoCell(s.clockOutPhoto, "Clock out", s.clockOutAt, s)}
-      </div>`}
-    </div>
-    <div class="Box-row decision color-bg-subtle">
-      ${s.manual ? `<div><div class="f6 color-fg-muted">Added manually</div><div class="text-semibold f4">${esc(fmtHours(s.approvedHours || 0))} h</div></div>` : `<div><div class="f6 color-fg-muted">Time on the clock</div><div class="text-semibold f4">${esc(fmtDuration(dur * 36e5))} <span class="color-fg-muted f6 text-normal">${esc(fmtHours(dur))} h</span></div></div>`}
+    <p class="mt-3"><b>${esc(s.event || (s.manual ? "Hours added by an admin" : s.category === "shop" ? "Shop" : "Outreach"))}</b> <span class="text-2">${esc(fmtDate(s.clockInAt))}</span> ${chip(s.category)}</p>
+    ${s.manual ? `<p class="footnote text-2 mt-1">Added by an admin, no photos</p>` : `<div class="photos">${photoCell(s.clockInPhoto, "Clock in", s.clockInAt, s)}${photoCell(s.clockOutPhoto, "Clock out", s.clockOutAt, s)}</div>`}
+    <div class="review__decision">
+      ${s.manual ? `<div class="kv"><span class="caption">Added manually</span><b>${esc(fmtHours(s.approvedHours || 0))} h</b></div>`
+                 : `<div class="kv"><span class="caption">Time on the clock</span><b>${esc(fmtDuration(dur * 36e5))} <span class="text-2" style="font-weight:500">${esc(fmtHours(dur))} h</span></b></div>`}
       ${deciding ? `
-        <div class="form-group"><label>Hours to approve</label><input class="form-control width-full hours" type="number" inputmode="decimal" step="0.25" min="0" max="24" value="${esc(s.approvedHours ?? suggestHours(s))}"></div>
-        <div class="form-group span"><label>Note to ${esc(first)} <span class="text-normal color-fg-muted">(optional; required to send back)</span></label><input class="form-control width-full note" type="text" maxlength="300" value="${esc(s.adminNote)}"></div>
-        ${s.note ? `<div class="span f6 color-fg-muted">Note from ${esc(first)}: “${esc(s.note)}”</div>` : ""}
+        <label class="field"><span class="field__label">Hours to approve</span><input class="input hours" type="number" inputmode="decimal" step="0.25" min="0" max="24" value="${esc(s.approvedHours ?? suggestHours(s))}"></label>
+        <label class="field"><span class="field__label">Note to ${esc(first)} <span class="opt">(optional, required to send back)</span></span><input class="input note" type="text" maxlength="300" value="${esc(s.adminNote)}"></label>
+        ${s.note ? `<p class="footnote text-2">Note from ${esc(first)}: “${esc(s.note)}”</p>` : ""}
         <div class="actions">
-          <button type="button" class="btn btn-primary approve">${icon("check")}Approve ${esc(fmtHours(s.approvedHours ?? suggestHours(s)))} hours</button>
-          <button type="button" class="btn btn-danger reject">Send back</button>
-          ${editing ? `<button type="button" class="btn btn-invisible cancel">Cancel</button>` : ""}
+          <button type="button" class="btn btn--primary approve">Approve ${esc(fmtHours(s.approvedHours ?? suggestHours(s)))} hours</button>
+          <button type="button" class="btn btn--destructive reject">Send back</button>
+          ${editing ? `<button type="button" class="btn btn--plain cancel">Cancel</button>` : ""}
         </div>` : `
-        <div><div class="f6 color-fg-muted">Decision</div>
-          <div>${s.status === "approved" ? `<b>${esc(fmtHours(s.approvedHours))} hours approved</b>` : `<b class="color-fg-danger">Sent back</b>`}${s.adminNote ? ` <span class="color-fg-muted">· ${esc(s.adminNote)}</span>` : ""}</div>
-          ${s.reviewedAt ? `<div class="f6 color-fg-muted">${esc(fmtDate(s.reviewedAt))}</div>` : ""}
-        </div>
-        <div class="actions"><button type="button" class="btn btn-sm change">Edit</button></div>`}
+        <div class="kv"><span class="caption">Decision</span><b>${s.status === "approved" ? `${esc(fmtHours(s.approvedHours))} hours approved` : `<span style="color:var(--red)">Sent back</span>`}</b>${s.adminNote ? `<span class="footnote text-2">${esc(s.adminNote)}</span>` : ""}${s.reviewedAt ? `<span class="caption text-3">${esc(fmtDate(s.reviewedAt))}</span>` : ""}</div>
+        <div class="actions"><button type="button" class="btn btn--small btn--tinted change">Edit</button></div>`}
     </div>
-  </div>`;
+  </article>`;
 }
-
 function bindReviewCards(root) {
   $$(".review[data-id]", root).forEach((card) => {
-    const id = card.dataset.id;
-    const hours = $(".hours", card), approve = $(".approve", card), reject = $(".reject", card);
-    if (hours && approve) hours.addEventListener("input", () => { approve.innerHTML = `${icon("check")}Approve ${esc(fmtHours(Number(hours.value) || 0))} hours`; });
+    const id = card.dataset.id, hours = $(".hours", card), approve = $(".approve", card), reject = $(".reject", card);
+    if (hours && approve) hours.addEventListener("input", () => { approve.textContent = `Approve ${fmtHours(Number(hours.value) || 0)} hours`; });
     approve?.addEventListener("click", () => decide(card, id, "approved", approve));
     reject?.addEventListener("click", () => decide(card, id, "rejected", reject));
     $(".cancel", card)?.addEventListener("click", () => { state.editing.delete(id); renderPanel(); });
     $(".change", card)?.addEventListener("click", () => { state.editing.add(id); renderPanel(); });
   });
 }
-
 async function decide(card, id, status, btn) {
   const hours = Number($(".hours", card).value), note = $(".note", card).value.trim();
-  if (status === "approved" && !(hours >= 0)) { toast("Enter the hours to approve.", "error"); return; }
-  if (status === "rejected" && !note) { toast("A note is required to send a session back.", "error"); $(".note", card).focus(); return; }
+  if (status === "approved" && !(hours >= 0)) { toast("Enter the hours to approve"); return; }
+  if (status === "rejected" && !note) { toast("A note is required to send a session back"); $(".note", card).focus(); return; }
   setBusy(btn, true, status === "approved" ? "Approving" : "Sending back");
   try {
     await db.reviewSession(id, { status, approvedHours: hours, adminNote: note });
     state.editing.delete(id);
-    toast(status === "approved" ? `Approved ${fmtHours(hours)} hours.` : "Sent back.", status === "approved" ? "gold" : "");
-    await loadData();
-    renderDash();
-  } catch (e) { toast(e.message, "error"); setBusy(btn, false); }
+    toast(status === "approved" ? `Approved ${fmtHours(hours)} hours` : "Sent back");
+    await loadData(); renderDash();
+  } catch (e) { toast(e.message); setBusy(btn, false); }
 }
 
 /* ---------------- live ---------------- */
 function renderLive(panel) {
   const open = state.sessions.filter((s) => s.status === "open");
   panel.innerHTML = open.length ? open.map((s) => `
-    <div class="Box mb-3" data-id="${esc(s.id)}">
-      <div class="Box-header d-flex">
-        <span class="initials">${esc(initials(s.userName || s.userEmail))}</span>
-        <div class="flex-auto"><div class="text-semibold">${esc(s.userName || s.userEmail)}</div><div class="f6 color-fg-muted">${esc(s.event || "Outreach")} · since ${esc(fmtTime(s.clockInAt))}, ${esc(fmtDay(s.clockInAt))}</div></div>
-        ${categoryTag(s.category)} <span class="State State--open"><span class="dot"></span>Clocked in</span>
+    <article class="card mb-3" data-id="${esc(s.id)}">
+      <div class="review__who">
+        <span class="avatar">${esc(initials(s.userName || s.userEmail))}</span>
+        <div class="row__main"><div class="row__title">${esc(s.userName || s.userEmail)}</div><div class="row__sub">${esc(s.event || "Outreach")}, since ${esc(fmtTime(s.clockInAt))} ${esc(fmtDay(s.clockInAt))}</div></div>
+        <div>${statusText("open")}</div>
       </div>
-      <div class="Box-body d-flex flex-wrap" style="gap:16px">
-        <div class="photos mt-0" style="grid-template-columns:1fr;max-width:200px">${photoCell(s.clockInPhoto, "Clock in", s.clockInAt, s)}</div>
-        <div><div class="f6 color-fg-muted">Time on the clock</div><div class="elapsed" data-since="${esc(s.clockInAt)}"></div></div>
+      <div class="photos" style="align-items:flex-start">
+        ${photoCell(s.clockInPhoto, "Clock in", s.clockInAt, s)}
+        <div class="kv" style="justify-content:center;padding-left:.5rem"><span class="caption">On the clock</span><b class="number" style="font-size:1.75rem" data-since="${esc(s.clockInAt)}"></b>${chip(s.category)}</div>
       </div>
-      <div class="Box-row color-bg-subtle d-flex flex-items-center flex-wrap" style="gap:8px 16px">
-        <button type="button" class="btn btn-sm close">${icon("x-circle")}Close session</button>
-        <span class="f6 color-fg-muted">For members who forgot to clock out. Ends the session now and sends it to review.</span>
+      <div class="actions mt-3" style="align-items:center">
+        <button type="button" class="btn btn--small btn--destructive close">Close session</button>
+        <span class="footnote text-2">For members who forgot to clock out. Ends the session now and sends it to review.</span>
       </div>
-    </div>`).join("") : `<div class="Box"><div class="blankslate">${icon("pulse", 24)}<h3 class="blankslate-heading">No one is clocked in</h3></div></div>`;
-  $$(".elapsed[data-since]", panel).forEach((el) => state.timers.push(liveTimer(el, el.dataset.since, 5000)));
+    </article>`).join("") : `<div class="card"><p class="empty">No one is clocked in</p></div>`;
+  $$("[data-since]", panel).forEach((el) => state.timers.push(liveTimer(el, el.dataset.since, 5000)));
   $$(".close", panel).forEach((b) => b.addEventListener("click", async () => {
-    const card = b.closest("[data-id]"), id = card.dataset.id;
+    const id = b.closest("[data-id]").dataset.id;
     if (!confirm("Close this session? The clock-out time will be now, and it will go to review.")) return;
     setBusy(b, true, "Closing");
-    try { await db.closeSession(id); toast("Session closed. Sent to review.", "gold"); await loadData(); renderDash(); }
-    catch (e) { toast(e.message, "error"); setBusy(b, false); }
+    try { await db.closeSession(id); toast("Session closed, sent to review"); await loadData(); renderDash(); }
+    catch (e) { toast(e.message); setBusy(b, false); }
   }));
   hydratePhotos(panel);
 }
 
 /* ---------------- members ---------------- */
 function renderMembers(panel) {
-  const req = Number(state.settings.requiredHours) || 10;
-  const q = state.search.trim().toLowerCase();
+  const r = req(), q = state.search.trim().toLowerCase();
   let list = state.members.filter((m) => !q || `${m.name} ${m.email} ${m.grade}`.toLowerCase().includes(q));
   if (state.sort === "progress") list = [...list].sort((a, b) => b.approvedHours - a.approvedHours || a.name.localeCompare(b.name));
   else if (state.sort === "left") list = [...list].sort((a, b) => a.approvedHours - b.approvedHours || a.name.localeCompare(b.name));
-  const sorts = [["name", "A–Z"], ["progress", "Most hours"], ["left", "Fewest hours"]];
+  const reqShop = Number(state.settings.requiredShopHours) || 0;
   panel.innerHTML = `
-    <div class="toolbar mb-3">
-      <div class="BtnGroup">${sorts.map(([k, l]) => `<button type="button" class="btn btn-sm BtnGroup-item ${state.sort === k ? "selected" : ""}" aria-pressed="${state.sort === k}" data-s="${k}">${l}</button>`).join("")}</div>
-      <span class="spacer"></span>
-      <input type="search" class="form-control input-sm" id="member-search" placeholder="Search" value="${esc(state.search)}" style="width:200px">
+    <div class="toolbar">
+      <div id="sort"></div>
+      <label class="search">${SEARCH}<input class="input" type="search" id="member-search" placeholder="Search" aria-label="Search members" value="${esc(state.search)}"></label>
     </div>
-    <div class="Box">
-      <div class="Box-header d-flex"><h2 class="Box-title flex-auto">Members</h2><span class="Counter">${list.length}</span></div>
+    <div class="group">
       ${list.length ? list.map((m) => `
-      <div class="Box-row member-row">
-        <div class="d-flex flex-items-center" style="gap:12px">
-          <span class="initials small">${esc(initials(m.name || m.email))}</span>
-          <div class="flex-auto" style="min-width:0"><span class="text-semibold">${esc(m.name || m.email)}</span>${m.role === "admin" ? ` <span class="Label Label--admin ml-1">Admin</span>` : ""}${m.excused ? ` <span class="Label Label--secondary ml-1">Excused</span>` : ""}</div>
-          <div class="nums"><b>${esc(fmtHours(m.approvedHours))}</b><small> / ${esc(fmtHours(req))} h</small>${db.shopReady ? `<br><small>Shop ${esc(fmtHours(m.shopHours || 0))} h${Number(state.settings.requiredShopHours) > 0 ? ` / ${esc(fmtHours(state.settings.requiredShopHours))}` : ""}</small>` : ""}</div>
+      <button type="button" class="row row--tappable" data-id="${esc(m.id)}">
+        <span class="avatar">${esc(initials(m.name || m.email))}</span>
+        <div class="row__main">
+          <div class="row__title">${esc(m.name || m.email)}${m.role === "admin" ? ` <span class="chip chip--admin">Admin</span>` : ""}${m.excused ? ` <span class="chip">Excused</span>` : ""}</div>
+          <div class="row__sub">${m.excused ? "Excused" : m.approvedHours >= r ? "Requirement met" : `${esc(fmtHours(r - m.approvedHours))} h to go`}${roundQuarter(m.pendingHours) ? `, ${esc(fmtHours(roundQuarter(m.pendingHours)))} h waiting` : ""}${m.openSessions ? ", clocked in" : ""}</div>
+          <div class="member-progress">${progressBar({ approved: m.approvedHours, pending: m.pendingHours, required: r, legend: false })}</div>
         </div>
-        ${progressBar({ approved: m.approvedHours, pending: m.pendingHours, required: req, large: false, legend: false })}
-        <div class="d-flex flex-justify-between f6 color-fg-muted mt-1">
-          <span>${roundQuarter(m.pendingHours) ? `${esc(fmtHours(roundQuarter(m.pendingHours)))} h waiting for review` : ""}${m.openSessions ? `${roundQuarter(m.pendingHours) ? " · " : ""}clocked in` : ""}${m.excused && m.excusedNote ? `${roundQuarter(m.pendingHours) || m.openSessions ? " · " : ""}${esc(m.excusedNote)}` : ""}</span>
-          <span>${m.excused ? "Excused" : m.approvedHours >= req ? `<span class="Label Label--approved">${icon("check", 12)} Requirement met</span>` : `${esc(fmtHours(req - m.approvedHours))} h to go`}</span>
-        </div>
-        <div class="member-actions">
-          <button type="button" class="btn btn-sm add-hours" data-id="${esc(m.id)}">${icon("clock")}Add hours</button>
-          <button type="button" class="btn btn-sm account" data-id="${esc(m.id)}">${icon("person")}Account</button>
-          ${m.id !== state.admin.id ? `<button type="button" class="btn btn-sm excuse" data-id="${esc(m.id)}" data-excused="${m.excused ? "1" : ""}">${m.excused ? "Remove excuse" : "Excuse from hours"}</button>
-          <button type="button" class="btn btn-sm btn-danger remove" data-id="${esc(m.id)}" data-name="${esc(m.name || m.email)}">Remove from roster</button>` : ""}
-        </div>
-      </div>`).join("") : `<div class="blankslate">${icon("people", 24)}<h3 class="blankslate-heading">No matching members</h3></div>`}
-      <div class="Box-footer d-flex flex-wrap flex-items-center" style="gap:8px">
-        <button type="button" class="btn btn-sm" id="export-members">${icon("download")}Download roster (CSV)</button>
-        <button type="button" class="btn btn-sm" id="export-sessions">${icon("download")}Download sessions (CSV)</button>
-      </div>
+        <div class="row__trail"><b>${esc(fmtHours(m.approvedHours))}<span class="text-2" style="font-weight:500"> / ${esc(fmtHours(r))} h</span></b>${db.shopReady ? `shop ${esc(fmtHours(m.shopHours || 0))}${reqShop ? ` / ${esc(fmtHours(reqShop))}` : ""} h` : ""}</div>
+        <span class="chevron" aria-hidden="true"></span>
+      </button>`).join("") : `<p class="empty">No matching members</p>`}
+    </div>
+    <div class="actions mt-3">
+      <button type="button" class="btn btn--small btn--tinted" id="export-members">Download roster (CSV)</button>
+      <button type="button" class="btn btn--small btn--tinted" id="export-sessions">Download sessions (CSV)</button>
     </div>`;
-  $$(".BtnGroup-item", panel).forEach((b) => b.addEventListener("click", () => { state.sort = b.dataset.s; renderPanel(); }));
-  $$(".add-hours", panel).forEach((b) => b.addEventListener("click", () => openAddHours(state.members.find((m) => m.id === b.dataset.id))));
-  $$(".account", panel).forEach((b) => b.addEventListener("click", () => openAccount(state.members.find((m) => m.id === b.dataset.id))));
-  $$(".excuse", panel).forEach((b) => b.addEventListener("click", async () => {
-    const excusing = !b.dataset.excused;
-    let note = "";
-    if (excusing) { note = prompt("Reason (optional). Members see this on their page."); if (note === null) return; }
-    setBusy(b, true, "Saving");
-    try { await db.setExcused(b.dataset.id, excusing, note.trim()); toast(excusing ? "Excused from the requirement." : "Excuse removed.", "gold"); await loadData(); renderDash(); }
-    catch (e) { toast(e.message, "error"); setBusy(b, false); }
-  }));
-  $$(".remove", panel).forEach((b) => b.addEventListener("click", async () => {
-    if (!confirm(`Remove ${b.dataset.name} from the roster? Their account, sessions and photos are deleted. This can't be undone.`)) return;
-    setBusy(b, true, "Removing");
-    try { await db.removeMember(b.dataset.id); toast("Removed from the roster.", "gold"); await loadData(); renderDash(); }
-    catch (e) { toast(e.message, "error"); setBusy(b, false); }
-  }));
+  segmented($("#sort", panel), { small: true, value: state.sort, onChange: (v) => { state.sort = v; renderPanel(); }, items: [{ value: "name", label: "A–Z" }, { value: "progress", label: "Most hours" }, { value: "left", label: "Fewest hours" }] });
   const search = $("#member-search", panel);
   search.addEventListener("input", () => { state.search = search.value; const pos = search.selectionStart; renderPanel(); const s2 = $("#member-search"); s2.focus(); s2.setSelectionRange(pos, pos); });
+  $$(".row[data-id]", panel).forEach((row) => row.addEventListener("click", () => openMemberSheet(state.members.find((m) => m.id === row.dataset.id))));
   $("#export-members", panel).addEventListener("click", () => {
     const rows = [["Name", "Email", "Grade", "Outreach hours approved", "Outreach waiting for review (hours)", "Required outreach hours", "Shop hours", "Status", "Excused note"]];
-    state.members.forEach((m) => rows.push([m.name, m.email, m.grade, fmtHours(m.approvedHours), fmtHours(m.pendingHours), req, fmtHours(m.shopHours || 0), m.excused ? "Excused" : m.approvedHours >= req ? "Requirement met" : "In progress", m.excusedNote || ""]));
+    state.members.forEach((m) => rows.push([m.name, m.email, m.grade, fmtHours(m.approvedHours), fmtHours(m.pendingHours), r, fmtHours(m.shopHours || 0), m.excused ? "Excused" : m.approvedHours >= r ? "Requirement met" : "In progress", m.excusedNote || ""]));
     csvDownload(`outreach-roster-${state.settings.semesterName.replace(/\s+/g, "-").toLowerCase()}.csv`, rows);
   });
   $("#export-sessions", panel).addEventListener("click", () => {
-    const iso = (v) => { if (!v) return ""; const d = new Date(v); const p = (n) => String(n).padStart(2, "0"); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`; };
+    const iso = (v) => { if (!v) return ""; const d = new Date(v), p = (n) => String(n).padStart(2, "0"); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`; };
     const rows = [["Date", "Member email", "Category", "Event", "Clock in", "Clock out", "Hours on clock", "Status", "Approved hours", "Admin note", "Member name", "Type"]];
     state.sessions.forEach((s) => rows.push([iso(s.clockInAt).slice(0, 10), s.userEmail, s.category === "shop" ? "Shop" : "Outreach", s.event, s.manual ? "" : iso(s.clockInAt).slice(11), s.manual ? "" : iso(s.clockOutAt).slice(11), s.manual ? "" : s.clockOutAt ? fmtHours(hoursBetween(s.clockInAt, s.clockOutAt)) : "", ({ pending: "Waiting", approved: "Approved", rejected: "Sent back", open: "Open" })[s.status], s.approvedHours ?? "", s.adminNote, s.userName, s.manual ? "Added by admin" : "Clock in/out"]));
     csvDownload(`outreach-sessions-${state.settings.semesterName.replace(/\s+/g, "-").toLowerCase()}.csv`, rows);
   });
 }
 
+/* a member's details and actions, from the roster */
+function openMemberSheet(m) {
+  if (!m) return;
+  const r = req(), self = m.id === state.admin.id, reqShop = Number(state.settings.requiredShopHours) || 0;
+  const el = sheet.open(`
+    ${sheetHead(esc(m.name || m.email), `${esc(m.email)}${m.grade ? `, Grade ${esc(m.grade)}` : ""}${m.role === "admin" ? ", admin" : ""}`)}
+    <div class="sheet__body">
+      <div class="kv"><span class="caption">Outreach</span><b>${esc(fmtHours(m.approvedHours))} / ${esc(fmtHours(r))} h</b></div>
+      <div class="mt-1">${progressBar({ approved: m.approvedHours, pending: m.pendingHours, required: r, excused: m.excused })}</div>
+      ${db.shopReady ? `<div class="kv mt-3"><span class="caption">Shop</span><b>${esc(fmtHours(m.shopHours || 0))}${reqShop ? ` / ${esc(fmtHours(reqShop))}` : ""} h</b></div>` : ""}
+      ${m.excused ? `<div class="notice notice--muted mt-3 footnote">Excused from the requirement${m.excusedNote ? `: ${esc(m.excusedNote)}` : ""}.</div>` : ""}
+    </div>
+    <div class="sheet__actions">
+      <button type="button" class="btn btn--tinted btn--full" data-act="hours">Add hours</button>
+      <button type="button" class="btn btn--tinted btn--full" data-act="account">Account</button>
+      ${self ? "" : `<button type="button" class="btn btn--tinted btn--full" data-act="excuse">${m.excused ? "Remove excuse" : "Excuse from hours"}</button>
+      <button type="button" class="btn btn--destructive btn--full" data-act="remove">Remove from roster</button>`}
+    </div>`);
+  $$("[data-act]", el).forEach((b) => b.addEventListener("click", async () => {
+    const act = b.dataset.act;
+    if (act === "hours") { await sheet.close(); openAddHours(m); return; }
+    if (act === "account") { await sheet.close(); openAccount(m); return; }
+    if (act === "excuse") {
+      const excusing = !m.excused; let note = "";
+      if (excusing) { note = prompt("Reason (optional). The member sees this on their page."); if (note === null) return; }
+      setBusy(b, true, "Saving");
+      try { await db.setExcused(m.id, excusing, note.trim()); await sheet.close(); toast(excusing ? "Excused from the requirement" : "Excuse removed"); await loadData(); renderDash(); }
+      catch (e) { toast(e.message); setBusy(b, false); }
+    }
+    if (act === "remove") {
+      if (!confirm(`Remove ${m.name || m.email} from the roster? Their account, sessions and photos are deleted. This can't be undone.`)) return;
+      setBusy(b, true, "Removing");
+      try { await db.removeMember(m.id); await sheet.close(); toast("Removed from the roster"); await loadData(); renderDash(); }
+      catch (e) { toast(e.message); setBusy(b, false); }
+    }
+  }));
+}
+
 /* ---------------- add hours by hand ---------------- */
 function openAddHours(m) {
   if (!m) return;
-  const first = (m.name || "them").split(" ")[0];
-  const d = new Date(), p = (n) => String(n).padStart(2, "0");
+  const first = (m.name || "them").split(" ")[0], d = new Date(), p = (n) => String(n).padStart(2, "0");
   const today = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
   const el = sheet.open(`
-    <div class="Overlay-header Overlay-header--divided">
-      <div class="Overlay-headerContentWrap">
-        <div class="Overlay-titleWrap"><h1 class="Overlay-title">Add hours</h1><p class="Overlay-description">${esc(m.name || m.email)}</p></div>
-        <div class="Overlay-actionWrap"><button type="button" class="close-button Overlay-closeButton" aria-label="Close">${icon("x")}</button></div>
-      </div>
-    </div>
-    <div class="Overlay-body">
+    ${sheetHead("Add hours", esc(m.name || m.email))}
+    <div class="sheet__body">
       <div class="field-row">
-        <div class="form-group"><label for="ah-hours">Hours</label><input class="form-control width-full" id="ah-hours" type="number" inputmode="decimal" step="0.25" min="0.25" max="24" value="1"></div>
-        <div class="form-group"><label for="ah-date">Date</label><input class="form-control width-full" id="ah-date" type="date" value="${today}"></div>
+        <label class="field"><span class="field__label">Hours</span><input class="input" id="ah-hours" type="number" inputmode="decimal" step="0.25" min="0.25" max="24" value="1"></label>
+        <label class="field"><span class="field__label">Date</span><input class="input" id="ah-date" type="date" value="${today}"></label>
       </div>
-      ${db.shopReady ? `<div class="form-group"><label for="ah-cat">Type</label><select class="form-select width-full" id="ah-cat"><option value="outreach">Outreach</option><option value="shop">Shop</option></select></div>` : ""}
-      <div class="form-group"><label for="ah-event">Event</label><input class="form-control width-full" id="ah-event" type="text" maxlength="80" placeholder="example: FTC Meet 9/20"></div>
-      <div class="form-group"><label for="ah-note">Note to ${esc(first)} <span class="text-normal color-fg-muted">(optional)</span></label><input class="form-control width-full" id="ah-note" type="text" maxlength="300"></div>
-      <div class="form-error" id="ah-error"></div>
+      ${db.shopReady ? `<label class="field"><span class="field__label">Type</span><select class="input" id="ah-cat"><option value="outreach">Outreach</option><option value="shop">Shop</option></select></label>` : ""}
+      <label class="field"><span class="field__label">Event</span><input class="input" id="ah-event" type="text" maxlength="80" placeholder="example: FTC Meet 9/20"></label>
+      <label class="field"><span class="field__label">Note to ${esc(first)} <span class="opt">(optional)</span></span><input class="input" id="ah-note" type="text" maxlength="300"></label>
+      <p class="form-error" id="ah-error"></p>
     </div>
-    <div class="Overlay-footer Overlay-footer--alignEnd">
-      <button class="btn" id="ah-cancel" type="button">Cancel</button>
-      <button class="btn btn-primary" id="ah-save" type="button">Add 1 hour</button>
-    </div>`);
+    <div class="sheet__actions"><button class="btn btn--primary btn--full" id="ah-save" type="button">Add 1 hour</button></div>`);
   const hours = $("#ah-hours", el), save = $("#ah-save", el), err = $("#ah-error", el);
-  const label = () => { const h = Number(hours.value) || 0; save.textContent = `Add ${fmtHours(h)} hour${h === 1 ? "" : "s"}`; };
-  hours.addEventListener("input", label);
-  $("#ah-cancel", el).addEventListener("click", () => sheet.close());
+  hours.addEventListener("input", () => { const h = Number(hours.value) || 0; save.textContent = `Add ${fmtHours(h)} hour${h === 1 ? "" : "s"}`; });
   save.addEventListener("click", async () => {
     const h = Number(hours.value);
     if (!(h > 0) || h > 24) { err.textContent = "Hours must be between 0.25 and 24."; return; }
     setBusy(save, true, "Adding");
     try {
       await db.addHours({ userId: m.id, hours: h, event: $("#ah-event", el).value, note: $("#ah-note", el).value, date: $("#ah-date", el).value, category: $("#ah-cat", el)?.value || "outreach" });
-      sheet.close();
-      toast(`Added ${fmtHours(h)} hours for ${m.name || m.email}.`, "gold");
-      await loadData(); renderDash();
+      await sheet.close(); toast(`Added ${fmtHours(h)} hours for ${m.name || m.email}`); await loadData(); renderDash();
     } catch (e) { err.textContent = e.message; setBusy(save, false); }
   });
 }
@@ -348,37 +317,28 @@ function openAccount(m) {
   if (!m) return;
   const grades = ["", "9", "10", "11", "12"];
   const el = sheet.open(`
-    <div class="Overlay-header Overlay-header--divided">
-      <div class="Overlay-headerContentWrap">
-        <div class="Overlay-titleWrap"><h1 class="Overlay-title">Account</h1><p class="Overlay-description">${esc(m.email)}</p></div>
-        <div class="Overlay-actionWrap"><button type="button" class="close-button Overlay-closeButton" aria-label="Close">${icon("x")}</button></div>
-      </div>
-    </div>
-    <div class="Overlay-body">
+    ${sheetHead("Account", esc(m.email))}
+    <div class="sheet__body">
       <form id="acct-form" novalidate>
         <div class="field-row">
-          <div class="form-group"><label for="acct-name">Name</label><input class="form-control width-full" id="acct-name" type="text" value="${esc(m.name)}" maxlength="80" required></div>
-          <div class="form-group"><label for="acct-grade">Grade</label><select class="form-select width-full" id="acct-grade">${grades.map((g) => `<option value="${g}" ${String(m.grade || "") === g ? "selected" : ""}>${g || "Not set"}</option>`).join("")}</select></div>
+          <label class="field"><span class="field__label">Name</span><input class="input" id="acct-name" type="text" value="${esc(m.name)}" maxlength="80" required></label>
+          <label class="field"><span class="field__label">Grade</span><select class="input" id="acct-grade">${grades.map((g) => `<option value="${g}" ${String(m.grade || "") === g ? "selected" : ""}>${g || "Not set"}</option>`).join("")}</select></label>
         </div>
-        <div class="form-error" id="acct-error"></div>
-        <button class="btn" type="submit" id="acct-save">Save</button>
+        <p class="form-error" id="acct-error"></p>
+        <button class="btn btn--tinted" type="submit" id="acct-save">Save</button>
       </form>
-      <div class="border-top mt-3 pt-3">
-        <div class="form-group"><label for="acct-pw">New password</label>
-          <div class="d-flex" style="gap:8px"><input class="form-control width-full" id="acct-pw" type="text" minlength="6" maxlength="72" autocomplete="off" placeholder="At least 6 characters"><button type="button" class="btn" id="acct-setpw">Set password</button></div>
-        </div>
-        <div class="form-error" id="acct-pw-error"></div>
-        ${db.mode === "supabase" ? `<button type="button" class="btn btn-sm" id="acct-reset">${icon("mail")}Send password reset email</button>` : ""}
-      </div>
-    </div>
-    <div class="Overlay-footer Overlay-footer--alignEnd"><button class="btn" type="button" id="acct-close">Close</button></div>`);
-  $("#acct-close", el).addEventListener("click", () => sheet.close());
+      <div class="hr"></div>
+      <label class="field"><span class="field__label">New password</span>
+        <div style="display:flex;gap:.5rem"><input class="input" id="acct-pw" type="text" minlength="6" maxlength="72" autocomplete="off" placeholder="6 or more characters"><button type="button" class="btn btn--tinted" id="acct-setpw" style="flex:none">Set</button></div>
+      </label>
+      <p class="form-error" id="acct-pw-error"></p>
+      ${db.mode === "supabase" ? `<button type="button" class="btn btn--plain" id="acct-reset">Send password reset email</button>` : ""}
+    </div>`);
   $("#acct-form", el).addEventListener("submit", async (e) => {
     e.preventDefault();
     const btn = $("#acct-save", el), err = $("#acct-error", el);
-    err.textContent = "";
-    setBusy(btn, true, "Saving");
-    try { await db.adminUpdateProfile(m.id, { name: $("#acct-name", el).value, grade: $("#acct-grade", el).value }); toast("Saved.", "gold"); await loadData(); setBusy(btn, false); renderDash(); }
+    err.textContent = ""; setBusy(btn, true, "Saving");
+    try { await db.adminUpdateProfile(m.id, { name: $("#acct-name", el).value, grade: $("#acct-grade", el).value }); toast("Saved"); await loadData(); setBusy(btn, false); renderPanel(); }
     catch (ex) { err.textContent = ex.message; setBusy(btn, false); }
   });
   $("#acct-setpw", el).addEventListener("click", async () => {
@@ -386,16 +346,14 @@ function openAccount(m) {
     err.textContent = "";
     if (pw.length < 6) { err.textContent = "Password must be at least 6 characters."; return; }
     setBusy(btn, true, "Saving");
-    try { await db.adminSetPassword(m.id, pw); toast(`Password set for ${m.name || m.email}.`, "gold"); $("#acct-pw", el).value = ""; }
+    try { await db.adminSetPassword(m.id, pw); toast(`Password set for ${m.name || m.email}`); $("#acct-pw", el).value = ""; }
     catch (ex) { err.textContent = ex.message; }
     setBusy(btn, false);
   });
   $("#acct-reset", el)?.addEventListener("click", async () => {
     const btn = $("#acct-reset", el), err = $("#acct-pw-error", el);
-    err.textContent = "";
-    setBusy(btn, true, "Sending");
-    try { await db.sendPasswordReset(m.email); toast(`Reset email sent to ${m.email}.`, "gold"); }
-    catch (ex) { err.textContent = ex.message; }
+    err.textContent = ""; setBusy(btn, true, "Sending");
+    try { await db.sendPasswordReset(m.email); toast(`Reset email sent to ${m.email}`); } catch (ex) { err.textContent = ex.message; }
     setBusy(btn, false);
   });
 }
@@ -404,39 +362,34 @@ function openAccount(m) {
 function renderSettings(panel) {
   const st = state.settings;
   panel.innerHTML = `
-    <div class="Box" style="max-width:640px">
-      <div class="Box-header"><h2 class="Box-title">Semester</h2></div>
-      <div class="Box-body">
-        <form id="settings-form">
-          <div class="form-group"><label for="semesterName">Name</label><input class="form-control width-full" id="semesterName" name="semesterName" type="text" value="${esc(st.semesterName)}" required></div>
-          <div class="field-row">
-            <div class="form-group"><label for="semesterStart">Start</label><input class="form-control width-full" id="semesterStart" name="semesterStart" type="date" value="${esc(st.semesterStart)}" required></div>
-            <div class="form-group"><label for="semesterEnd">End</label><input class="form-control width-full" id="semesterEnd" name="semesterEnd" type="date" value="${esc(st.semesterEnd)}" required></div>
-          </div>
-          <div class="field-row">
-            <div class="form-group"><label for="requiredHours">Required outreach hours</label><input class="form-control width-full" id="requiredHours" name="requiredHours" type="number" step="0.5" min="0" value="${esc(st.requiredHours)}" required></div>
-            ${db.shopReady ? `<div class="form-group"><label for="requiredShopHours">Required shop hours</label><input class="form-control width-full" id="requiredShopHours" name="requiredShopHours" type="number" step="0.5" min="0" value="${esc(st.requiredShopHours ?? 0)}" required><span class="note">0 means tracked only.</span></div>` : ""}
-          </div>
-          ${db.shopReady ? `<div class="form-checkbox"><label><input type="checkbox" id="shopRequiresReview" name="shopRequiresReview" ${st.shopRequiresReview ? "checked" : ""}> Shop sessions need admin review</label><p class="note">Off: shop hours count as soon as the member clocks out.</p></div>` : ""}
-          <div class="form-group"><label for="verificationObject">Required object in every photo</label><input class="form-control width-full" id="verificationObject" name="verificationObject" type="text" value="${esc(st.verificationObject)}" maxlength="80" required></div>
-          <div class="form-error" id="settings-error"></div>
-          <button class="btn btn-primary" type="submit">Save</button>
-        </form>
-      </div>
-    </div>
-    <div class="Box" style="max-width:640px">
-      <div class="Box-header"><h2 class="Box-title">Admins</h2></div>
-      ${db.mode === "supabase" ? `
-                ${state.members.map((m) => `
-          <div class="Box-row d-flex flex-items-center" style="gap:12px">
-            <span class="initials small">${esc(initials(m.name || m.email))}</span>
-            <div class="flex-auto" style="min-width:0"><div class="text-semibold">${esc(m.name || m.email)}</div><div class="f6 color-fg-muted">${esc(m.email)}</div></div>
-            ${m.id === state.admin.id ? `<span class="Label Label--admin">Admin · you</span>` : m.role === "admin" ? `<button type="button" class="btn btn-sm role" data-id="${esc(m.id)}" data-role="member">Remove admin</button>` : `<button type="button" class="btn btn-sm role" data-id="${esc(m.id)}" data-role="admin">Make admin</button>`}
-          </div>`).join("")}
-      ` : `
-        <div class="Box-row f6 color-fg-muted">Demo mode uses one shared passcode from config.js. With Supabase connected, admins are accounts managed here.</div>
-        <div class="Box-row"><button type="button" class="btn btn-sm btn-danger" id="reset-demo">${icon("trash")}Reset demo data</button></div>
-      `}
+    <section class="card">
+      <h2 class="card__title mb-3">Semester</h2>
+      <form id="settings-form">
+        <label class="field"><span class="field__label">Name</span><input class="input" id="semesterName" name="semesterName" type="text" value="${esc(st.semesterName)}" required></label>
+        <div class="field-row">
+          <label class="field"><span class="field__label">Start</span><input class="input" id="semesterStart" name="semesterStart" type="date" value="${esc(st.semesterStart)}" required></label>
+          <label class="field"><span class="field__label">End</span><input class="input" id="semesterEnd" name="semesterEnd" type="date" value="${esc(st.semesterEnd)}" required></label>
+        </div>
+        <div class="field-row">
+          <label class="field"><span class="field__label">Required outreach hours</span><input class="input" id="requiredHours" name="requiredHours" type="number" step="0.5" min="0" value="${esc(st.requiredHours)}" required></label>
+          ${db.shopReady ? `<label class="field"><span class="field__label">Required shop hours <span class="opt">(0 = tracked only)</span></span><input class="input" id="requiredShopHours" name="requiredShopHours" type="number" step="0.5" min="0" value="${esc(st.requiredShopHours ?? 0)}" required></label>` : ""}
+        </div>
+        ${db.shopReady ? `<label class="check"><input type="checkbox" id="shopRequiresReview" name="shopRequiresReview" ${st.shopRequiresReview ? "checked" : ""}><span>Shop sessions need admin review<span class="footnote">Off: shop hours count as soon as the member clocks out.</span></span></label>` : ""}
+        <label class="field"><span class="field__label">Required object in every photo</span><input class="input" id="verificationObject" name="verificationObject" type="text" value="${esc(st.verificationObject)}" maxlength="80" required></label>
+        <p class="form-error" id="settings-error"></p>
+        <button class="btn btn--primary" type="submit">Save</button>
+      </form>
+    </section>
+    <h2 class="section-title">Admins</h2>
+    <div class="group">
+      ${db.mode === "supabase" ? state.members.map((m) => `
+        <div class="row">
+          <span class="avatar">${esc(initials(m.name || m.email))}</span>
+          <div class="row__main"><div class="row__title">${esc(m.name || m.email)}</div><div class="row__sub">${esc(m.email)}</div></div>
+          ${m.id === state.admin.id ? `<span class="chip chip--admin">You</span>` : m.role === "admin" ? `<button type="button" class="btn btn--small btn--tinted role" data-id="${esc(m.id)}" data-role="member">Remove admin</button>` : `<button type="button" class="btn btn--small btn--tinted role" data-id="${esc(m.id)}" data-role="admin">Make admin</button>`}
+        </div>`).join("") : `
+        <div class="row"><div class="row__main"><div class="row__sub">Demo mode uses one shared passcode from config.js. With Supabase connected, admins are accounts managed here.</div></div></div>
+        <div class="row"><button type="button" class="btn btn--small btn--destructive" id="reset-demo">Reset demo data</button></div>`}
     </div>`;
   $("#settings-form", panel).addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -444,16 +397,18 @@ function renderSettings(panel) {
     const f = Object.fromEntries(new FormData(e.currentTarget).entries());
     if (f.semesterEnd < f.semesterStart) { err.textContent = "End date is before start date."; return; }
     setBusy(btn, true, "Saving");
-    try { state.settings = await db.updateSettings({ ...f, requiredHours: Number(f.requiredHours), ...(db.shopReady ? { requiredShopHours: Number(f.requiredShopHours) || 0, shopRequiresReview: !!f.shopRequiresReview } : {}) }); toast("Saved.", "gold"); await loadData(); renderDash(); }
-    catch (ex) { err.textContent = ex.message; setBusy(btn, false); }
+    try {
+      state.settings = await db.updateSettings({ ...f, requiredHours: Number(f.requiredHours), ...(db.shopReady ? { requiredShopHours: Number(f.requiredShopHours) || 0, shopRequiresReview: !!f.shopRequiresReview } : {}) });
+      toast("Saved"); await loadData(); renderDash();
+    } catch (ex) { err.textContent = ex.message; setBusy(btn, false); }
   });
   $$(".role", panel).forEach((b) => b.addEventListener("click", async () => {
     setBusy(b, true, "Saving");
-    try { await db.setRole(b.dataset.id, b.dataset.role); toast(b.dataset.role === "admin" ? "Admin access added." : "Admin access removed.", "gold"); await loadData(); renderPanel(); }
-    catch (e) { toast(e.message, "error"); setBusy(b, false); }
+    try { await db.setRole(b.dataset.id, b.dataset.role); toast(b.dataset.role === "admin" ? "Admin access added" : "Admin access removed"); await loadData(); renderPanel(); }
+    catch (e) { toast(e.message); setBusy(b, false); }
   }));
   $("#reset-demo", panel)?.addEventListener("click", async () => {
     if (!confirm("Reset demo data? This removes anything you added.")) return;
-    await db.resetDemo(); toast("Demo data reset.", "gold"); await refresh();
+    await db.resetDemo(); toast("Demo data reset"); await refresh();
   });
 }

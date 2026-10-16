@@ -2,10 +2,10 @@
 // App files are network-first (so updates land right away) with a cache fallback.
 // The Supabase client library is cached after first use. API calls are never cached.
 
-const VERSION = "outreach-v2";
+const VERSION = "outreach-v3";
 const SHELL = [
   "./", "./index.html", "./admin.html", "./config.js", "./manifest.webmanifest",
-  "./css/primer.css", "./css/app.css", "./js/icons.js", "./js/ui.js", "./js/photo.js", "./js/photos-ui.js", "./js/db.js", "./js/app.js", "./js/admin.js",
+  "./css/app.css", "./js/ui.js", "./js/photo.js", "./js/photos-ui.js", "./js/db.js", "./js/app.js", "./js/admin.js",
   "./icons/logo.svg", "./icons/icon-192.png", "./icons/apple-touch-icon.png", "./icons/favicon-32.png",
 ];
 const EXT = ["cdn.jsdelivr.net"];
