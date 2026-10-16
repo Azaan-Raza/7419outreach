@@ -136,9 +136,12 @@ function ensureSheet() {
 }
 function animateTo(el, from, to, duration, extra = {}) {
   el.style.transform = "";
-  if (reducedMotion()) { el.style.transform = to === "translateY(0)" ? "" : to; return Promise.resolve(); }
+  const settle = () => { if (to === "translateY(0)" || /scale\(1\)/.test(to)) el.style.transform = ""; else el.style.transform = to; };
+  if (reducedMotion()) { settle(); return Promise.resolve(); }
   const anim = el.animate([{ transform: from, ...(extra.from || {}) }, { transform: to, ...(extra.to || {}) }], { duration, easing: "cubic-bezier(0.32, 0.72, 0, 1)", fill: "both" });
-  return anim.finished.then(() => { try { anim.commitStyles(); } catch (_) {} anim.cancel(); if (to === "translateY(0)" || /scale\(1\)/.test(to)) el.style.transform = ""; }).catch(() => {});
+  // If the tab is throttled and frames never come, don't wait forever: settle at the target.
+  const timeout = new Promise((r) => setTimeout(r, duration + 150));
+  return Promise.race([anim.finished.catch(() => {}), timeout]).then(() => { try { anim.commitStyles(); } catch (_) {} anim.cancel(); settle(); });
 }
 
 export const sheet = {
