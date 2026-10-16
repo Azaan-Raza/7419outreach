@@ -41,8 +41,8 @@ function renderSignIn() {
     <p class="lead subhead">Team 7419</p>
     <form id="admin-form" novalidate>
       <div class="fieldset">
-        ${demo ? `<input class="input" id="passcode" name="passcode" type="password" placeholder="Admin passcode" aria-label="Admin passcode" inputmode="numeric" autocomplete="off" required>`
-               : `<input class="input" id="email" name="email" type="email" placeholder="Email" aria-label="Email" autocomplete="email" required><input class="input" id="password" name="password" type="password" placeholder="Password" aria-label="Password" autocomplete="current-password" required>`}
+        ${demo ? `<label class="field"><span class="field__label">Admin passcode</span><input class="input" id="passcode" name="passcode" type="password" inputmode="numeric" autocomplete="off" required></label>`
+               : `<label class="field"><span class="field__label">Email</span><input class="input" id="email" name="email" type="email" autocomplete="email" required></label><label class="field"><span class="field__label">Password</span><input class="input" id="password" name="password" type="password" autocomplete="current-password" required></label>`}
       </div>
       <p class="form-error" id="admin-error"></p>
       <button class="btn btn--primary btn--full" type="submit">Sign in</button>

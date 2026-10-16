@@ -2,13 +2,13 @@
 // App files are network-first (so updates land right away) with a cache fallback.
 // The Supabase client library is cached after first use. API calls are never cached.
 
-const VERSION = "outreach-v3";
+const VERSION = "outreach-v4";
 const SHELL = [
   "./", "./index.html", "./admin.html", "./config.js", "./manifest.webmanifest",
   "./css/app.css", "./js/ui.js", "./js/photo.js", "./js/photos-ui.js", "./js/db.js", "./js/app.js", "./js/admin.js",
   "./icons/logo.svg", "./icons/icon-192.png", "./icons/apple-touch-icon.png", "./icons/favicon-32.png",
 ];
-const EXT = ["cdn.jsdelivr.net"];
+const EXT = ["cdn.jsdelivr.net", "fonts.googleapis.com", "fonts.gstatic.com"];
 
 self.addEventListener("install", (e) => {
   e.waitUntil(caches.open(VERSION).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));

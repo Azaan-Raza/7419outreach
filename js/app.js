@@ -54,10 +54,10 @@ function renderLanding() {
     <p class="lead subhead">Team 7419</p>
     <form id="auth-form" novalidate>
       <div class="fieldset">
-        ${signup ? `<input class="input" id="name" name="name" type="text" placeholder="Name" aria-label="Name" autocomplete="name" required>` : ""}
-        <input class="input" id="email" name="email" type="email" placeholder="Email" aria-label="Email" autocomplete="email" inputmode="email" required>
-        ${signup ? `<select class="input" id="grade" name="grade" aria-label="Grade"><option value="">Grade</option><option>9</option><option>10</option><option>11</option><option>12</option></select>` : ""}
-        <input class="input" id="password" name="password" type="password" placeholder="${signup ? "Password, 6 or more characters" : "Password"}" aria-label="Password" autocomplete="${signup ? "new-password" : "current-password"}" ${signup ? 'minlength="6"' : ""} required>
+        ${signup ? `<label class="field"><span class="field__label">Name</span><input class="input" id="name" name="name" type="text" autocomplete="name" required></label>` : ""}
+        <label class="field"><span class="field__label">Email</span><input class="input" id="email" name="email" type="email" autocomplete="email" inputmode="email" required></label>
+        ${signup ? `<label class="field"><span class="field__label">Grade</span><select class="input" id="grade" name="grade"><option value="">Select</option><option>9</option><option>10</option><option>11</option><option>12</option></select></label>` : ""}
+        <label class="field"><span class="field__label">Password${signup ? ` <span class="opt">(6 or more characters)</span>` : ""}</span><input class="input" id="password" name="password" type="password" autocomplete="${signup ? "new-password" : "current-password"}" ${signup ? 'minlength="6"' : ""} required></label>
       </div>
       <p class="form-error" id="auth-error"></p>
       <button class="btn btn--primary btn--full" type="submit">${signup ? "Create account" : "Sign in"}</button>
@@ -82,7 +82,7 @@ function renderForgot() {
     <h1 class="large-title">Reset password</h1>
     <p class="lead subhead">We'll email you a link to set a new one.</p>
     <form id="forgot-form" novalidate>
-      <div class="fieldset"><input class="input" id="email" name="email" type="email" placeholder="Email" aria-label="Email" autocomplete="email" inputmode="email" required></div>
+      <div class="fieldset"><label class="field"><span class="field__label">Email</span><input class="input" id="email" name="email" type="email" autocomplete="email" inputmode="email" required></label></div>
       <p class="form-error" id="auth-error"></p>
       <button class="btn btn--primary btn--full" type="submit">Send reset email</button>
     </form>
@@ -114,8 +114,8 @@ function renderSetPassword() {
     <p class="lead subhead">${esc(state.user?.email || "")}</p>
     <form id="setpw-form" novalidate>
       <div class="fieldset">
-        <input class="input" id="pw1" type="password" placeholder="New password, 6 or more characters" aria-label="New password" autocomplete="new-password" minlength="6" required>
-        <input class="input" id="pw2" type="password" placeholder="Confirm new password" aria-label="Confirm new password" autocomplete="new-password" minlength="6" required>
+        <label class="field"><span class="field__label">New password <span class="opt">(6 or more characters)</span></span><input class="input" id="pw1" type="password" autocomplete="new-password" minlength="6" required></label>
+        <label class="field"><span class="field__label">Confirm new password</span><input class="input" id="pw2" type="password" autocomplete="new-password" minlength="6" required></label>
       </div>
       <p class="form-error" id="auth-error"></p>
       <button class="btn btn--primary btn--full" type="submit">Set password</button>
@@ -172,7 +172,7 @@ function renderHome() {
         <button class="btn btn--primary btn--full mt-3" id="clock-out" type="button">Clock out</button>
         <p class="footnote text-3 mt-2">If you forget to clock out, an admin can close the session. The time stops when they do.</p>
       ` : `
-        <h2 class="card__title">Not clocked in</h2>
+        <h2 class="headline">Not clocked in</h2>
         <p class="mono-note mt-1">${objectLine(st)}</p>
         <button class="btn btn--primary btn--full mt-3" id="clock-in" type="button">Clock in</button>
       `}
